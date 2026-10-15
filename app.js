@@ -1,3 +1,5 @@
+const game = { track: null };
+
 const screens = new Map();
 
 function registerScreen(id, hooks = {}) {

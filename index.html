@@ -19,9 +19,22 @@
           <span class="mode-desc">Click roads to trace driving routes between points.</span>
         </button>
 
+        <button class="mode-card" type="button" data-screen="drive">
+          <span class="mode-title">Drive</span>
+          <span class="mode-desc">Get in a car and follow the route you drew.</span>
+        </button>
+
         <div class="mode-card disabled">
           <span class="mode-title">More coming soon</span>
           <span class="mode-desc">New modes will show up here.</span>
+        </div>
+      </div>
+
+      <div class="settings">
+        <span>Units</span>
+        <div class="units-toggle">
+          <button type="button" data-units="imperial">Miles</button>
+          <button type="button" data-units="metric">Kilometers</button>
         </div>
       </div>
     </div>
@@ -43,11 +56,23 @@
         <input type="color" id="color" value="#e63946" />
       </label>
 
+      <div class="field">
+        Units
+        <div class="units-toggle">
+          <button type="button" data-units="imperial">Miles</button>
+          <button type="button" data-units="metric">Kilometers</button>
+        </div>
+      </div>
+
       <div class="actions">
         <button id="new" type="button">New route</button>
         <button id="undo" type="button">Undo point</button>
         <button id="clear" type="button">Clear all</button>
       </div>
+
+      <button id="drive-route" class="cta" type="button" disabled>
+        Drive this route &rarr;
+      </button>
 
       <p id="status" class="status">Click a road to start.</p>
       <small class="credit">
@@ -56,8 +81,64 @@
     </div>
   </section>
 
+  <section id="drive" class="screen hidden">
+    <div id="drive-map"></div>
+
+    <div class="drive-hud">
+      <button class="back" type="button" data-screen="home">&larr; Back</button>
+
+      <div class="stat">
+        <span id="drive-speed">0</span><small id="drive-speed-unit">mph</small>
+      </div>
+
+      <div class="units-toggle compact">
+        <button type="button" data-units="imperial">mph</button>
+        <button type="button" data-units="metric">km/h</button>
+      </div>
+      <div class="bar">
+        <div id="drive-progress-fill"></div>
+      </div>
+      <div class="stat small">
+        <span id="drive-progress">0%</span> of route
+      </div>
+
+      <button id="drive-restart" class="cta" type="button">Restart</button>
+      <div id="drive-warning" class="warning hidden">Off road!</div>
+    </div>
+
+    <div id="drive-empty" class="drive-overlay hidden">
+      <p>You haven't drawn a route yet.</p>
+      <button class="cta" type="button" data-screen="free-draw">Draw a route</button>
+    </div>
+
+    <div id="drive-end" class="drive-overlay hidden">
+      <div class="end-card">
+        <h2>Route complete!</h2>
+        <p>
+          You drove <strong id="end-distance">0 mi</strong> in
+          <strong id="end-time">0:00</strong>.
+        </p>
+        <button id="end-again" class="cta" type="button">Drive again</button>
+        <button class="cta ghost" type="button" data-screen="home">Back to home</button>
+      </div>
+    </div>
+
+    <div class="drive-controls">
+      <div class="pad">
+        <button id="ctrl-left" class="ctrl" type="button" aria-label="Steer left">&#9664;</button>
+        <button id="ctrl-right" class="ctrl" type="button" aria-label="Steer right">&#9654;</button>
+      </div>
+      <div class="pad">
+        <button id="ctrl-brake" class="ctrl" type="button" aria-label="Brake / reverse">&#9660;</button>
+        <button id="ctrl-accel" class="ctrl" type="button" aria-label="Accelerate">&#9650;</button>
+      </div>
+    </div>
+  </section>
+
   <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+  <script src="units.js"></script>
   <script src="app.js"></script>
   <script src="free-draw.js"></script>
+  <script src="drive.js"></script>
 </body>
 </html>

@@ -5,6 +5,7 @@ const START = [2.3522, 48.8566];
 function initFreeDraw() {
   const colorInput = document.getElementById("color");
   const statusEl = document.getElementById("status");
+  const driveBtn = document.getElementById("drive-route");
 
   const map = new maplibregl.Map({
     container: "map",
@@ -14,7 +15,8 @@ function initFreeDraw() {
   });
 
   map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), "top-right");
-  map.addControl(new maplibregl.ScaleControl({ maxWidth: 120, unit: "metric" }), "bottom-left");
+  let scaleControl = new maplibregl.ScaleControl({ maxWidth: 120, unit: scaleUnit() });
+  map.addControl(scaleControl, "bottom-left");
   map.addControl(new maplibregl.FullscreenControl(), "top-right");
 
   const routes = [];
@@ -24,15 +26,40 @@ function initFreeDraw() {
     statusEl.textContent = text;
   }
 
+  function refreshStatus() {
+    if (!current) return;
+    if (current.points.length === 0) {
+      setStatus("Click a road to add a point.");
+    } else if (current.points.length < 2) {
+      setStatus(`${current.points.length} point added — click another road to trace.`);
+    } else if (current.distance != null) {
+      setStatus(`${current.points.length} points · ${distanceText(current.distance)}`);
+    } else {
+      setStatus(`${current.points.length} points`);
+    }
+  }
+
+  onUnitsChange(() => {
+    map.removeControl(scaleControl);
+    scaleControl = new maplibregl.ScaleControl({ maxWidth: 120, unit: scaleUnit() });
+    map.addControl(scaleControl, "bottom-left");
+    refreshStatus();
+  });
+
   function toFeature(geometry, color) {
     return { type: "Feature", properties: { color }, geometry };
   }
 
+  function updateDriveButton() {
+    driveBtn.disabled = !(current && current.line);
+  }
+
   function newRoute() {
-    current = { color: colorInput.value, points: [], line: null };
+    current = { color: colorInput.value, points: [], line: null, distance: null };
     routes.push(current);
     drawRoutes();
-    setStatus("Click a road to add a point.");
+    updateDriveButton();
+    refreshStatus();
   }
 
   function drawRoutes() {
@@ -55,8 +82,10 @@ function initFreeDraw() {
 
     if (current.points.length < 2) {
       current.line = null;
+      current.distance = null;
       drawRoutes();
-      setStatus(`${current.points.length} point added — click another road to trace.`);
+      updateDriveButton();
+      refreshStatus();
       return;
     }
 
@@ -76,14 +105,20 @@ function initFreeDraw() {
 
       const route = data.routes[0];
       current.line = route.geometry;
-      const km = (route.distance / 1000).toFixed(2);
-      setStatus(`${current.points.length} points · ${km} km`);
+      current.distance = route.distance;
+      game.track = route.geometry.coordinates;
     } catch (err) {
       current.line = null;
+      current.distance = null;
       setStatus(err.message);
+      drawRoutes();
+      updateDriveButton();
+      return;
     }
 
     drawRoutes();
+    updateDriveButton();
+    refreshStatus();
   }
 
   map.on("load", () => {
@@ -147,6 +182,12 @@ function initFreeDraw() {
     if (current) {
       current.color = colorInput.value;
       drawRoutes();
+    }
+  });
+  driveBtn.addEventListener("click", () => {
+    if (current && current.line) {
+      game.track = current.line.coordinates;
+      openScreen("drive");
     }
   });
 
