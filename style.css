@@ -6,6 +6,91 @@ html, body {
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
 }
 
+.screen {
+  position: absolute;
+  inset: 0;
+}
+
+.hidden {
+  display: none !important;
+}
+
+/* ---------- Home screen ---------- */
+
+#home {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(160deg, #0f172a 0%, #1e3a8a 60%, #2563eb 100%);
+  color: #fff;
+}
+
+.home-inner {
+  width: 100%;
+  max-width: 720px;
+  padding: 32px;
+  text-align: center;
+}
+
+.home-inner h1 {
+  margin: 0 0 8px;
+  font-size: 42px;
+  letter-spacing: -0.5px;
+}
+
+.tagline {
+  margin: 0 0 30px;
+  color: #cbd5e1;
+}
+
+.mode-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 16px;
+}
+
+.mode-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 20px;
+  text-align: left;
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.08);
+  cursor: pointer;
+  transition: transform 0.12s ease, background 0.12s ease;
+}
+
+.mode-card:hover {
+  background: rgba(255, 255, 255, 0.16);
+  transform: translateY(-2px);
+}
+
+.mode-card.disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.mode-card.disabled:hover {
+  background: rgba(255, 255, 255, 0.08);
+  transform: none;
+}
+
+.mode-title {
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.mode-desc {
+  font-size: 13px;
+  line-height: 1.4;
+  color: #cbd5e1;
+}
+
+/* ---------- Free draw screen ---------- */
+
 #map {
   position: absolute;
   inset: 0;
@@ -61,8 +146,7 @@ input[type="color"] {
   margin: 10px 0;
 }
 
-button {
-  flex: 1 1 auto;
+.panel button {
   padding: 8px 10px;
   font-size: 13px;
   border: 1px solid #ccc;
@@ -71,7 +155,18 @@ button {
   cursor: pointer;
 }
 
-button:hover { background: #eee; }
+.panel button:hover {
+  background: #eee;
+}
+
+.actions button {
+  flex: 1 1 auto;
+}
+
+.panel button.back {
+  margin-bottom: 12px;
+  padding: 6px 10px;
+}
 
 .status {
   margin: 12px 0 6px;

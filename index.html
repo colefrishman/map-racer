@@ -3,38 +3,61 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Road Painter</title>
+  <title>Earth Racer</title>
   <link href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" rel="stylesheet" />
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <div id="map"></div>
+  <section id="home" class="screen">
+    <div class="home-inner">
+      <h1>Earth Racer</h1>
+      <p class="tagline">Pick a mode to get started.</p>
 
-  <div class="panel">
-    <h1>Road Painter</h1>
-    <p class="hint">
-      Click on roads to trace the shortest driving route. Keep clicking to extend
-      the current route, or start a new one.
-    </p>
+      <div class="mode-grid">
+        <button class="mode-card" type="button" data-screen="free-draw">
+          <span class="mode-title">Free Draw</span>
+          <span class="mode-desc">Click roads to trace driving routes between points.</span>
+        </button>
 
-    <label class="field">
-      Route color
-      <input type="color" id="color" value="#e63946" />
-    </label>
-
-    <div class="actions">
-      <button id="new" type="button">New route</button>
-      <button id="undo" type="button">Undo point</button>
-      <button id="clear" type="button">Clear all</button>
+        <div class="mode-card disabled">
+          <span class="mode-title">More coming soon</span>
+          <span class="mode-desc">New modes will show up here.</span>
+        </div>
+      </div>
     </div>
+  </section>
 
-    <p id="status" class="status">Click a road to start.</p>
-    <small class="credit">
-      OpenFreeMap / OpenStreetMap tiles · public OSRM routing · internet required.
-    </small>
-  </div>
+  <section id="free-draw" class="screen hidden">
+    <div id="map"></div>
+
+    <div class="panel">
+      <button class="back" type="button" data-screen="home">&larr; Back</button>
+      <h1>Road Painter</h1>
+      <p class="hint">
+        Click on roads to trace the shortest driving route. Keep clicking to
+        extend the current route, or start a new one.
+      </p>
+
+      <label class="field">
+        Route color
+        <input type="color" id="color" value="#e63946" />
+      </label>
+
+      <div class="actions">
+        <button id="new" type="button">New route</button>
+        <button id="undo" type="button">Undo point</button>
+        <button id="clear" type="button">Clear all</button>
+      </div>
+
+      <p id="status" class="status">Click a road to start.</p>
+      <small class="credit">
+        OpenFreeMap / OpenStreetMap tiles · public OSRM routing · internet required.
+      </small>
+    </div>
+  </section>
 
   <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
   <script src="app.js"></script>
+  <script src="free-draw.js"></script>
 </body>
 </html>
