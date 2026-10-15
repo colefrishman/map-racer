@@ -1,0 +1,88 @@
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+#map {
+  position: absolute;
+  inset: 0;
+}
+
+.panel {
+  position: absolute;
+  top: 16px;
+  left: 16px;
+  z-index: 2;
+  width: 250px;
+  padding: 18px;
+  border-radius: 14px;
+  background: #fff;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.2);
+}
+
+.panel h1 {
+  margin: 0 0 10px;
+  font-size: 17px;
+}
+
+.hint {
+  margin: 0 0 12px;
+  font-size: 12.5px;
+  line-height: 1.4;
+  color: #555;
+}
+
+.field {
+  display: block;
+  margin: 10px 0;
+  font-size: 13px;
+  color: #333;
+}
+
+input[type="color"] {
+  height: 38px;
+  width: 66px;
+  padding: 2px;
+  margin-left: 6px;
+  vertical-align: middle;
+  border: 1px solid #ccc;
+  border-radius: 7px;
+  background: none;
+  cursor: pointer;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 10px 0;
+}
+
+button {
+  flex: 1 1 auto;
+  padding: 8px 10px;
+  font-size: 13px;
+  border: 1px solid #ccc;
+  border-radius: 7px;
+  background: #f7f7f7;
+  cursor: pointer;
+}
+
+button:hover { background: #eee; }
+
+.status {
+  margin: 12px 0 6px;
+  font-size: 12px;
+  color: #555;
+  min-height: 15px;
+}
+
+.credit {
+  display: block;
+  font-size: 11px;
+  line-height: 1.4;
+  color: #999;
+}

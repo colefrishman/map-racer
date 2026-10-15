@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Road Painter</title>
+  <link href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="map"></div>
+
+  <div class="panel">
+    <h1>Road Painter</h1>
+    <p class="hint">
+      Click on roads to trace the shortest driving route. Keep clicking to extend
+      the current route, or start a new one.
+    </p>
+
+    <label class="field">
+      Route color
+      <input type="color" id="color" value="#e63946" />
+    </label>
+
+    <div class="actions">
+      <button id="new" type="button">New route</button>
+      <button id="undo" type="button">Undo point</button>
+      <button id="clear" type="button">Clear all</button>
+    </div>
+
+    <p id="status" class="status">Click a road to start.</p>
+    <small class="credit">
+      OpenFreeMap / OpenStreetMap tiles · public OSRM routing · internet required.
+    </small>
+  </div>
+
+  <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
