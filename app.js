@@ -1,4 +1,5 @@
 const game = { track: null };
+window.game = game;
 
 const screens = new Map();
 

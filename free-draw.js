@@ -6,6 +6,7 @@ function initFreeDraw() {
   const colorInput = document.getElementById("color");
   const statusEl = document.getElementById("status");
   const driveBtn = document.getElementById("drive-route");
+  const drive3dBtn = document.getElementById("drive-route-3d");
 
   const map = new maplibregl.Map({
     container: "map",
@@ -51,7 +52,9 @@ function initFreeDraw() {
   }
 
   function updateDriveButton() {
-    driveBtn.disabled = !(current && current.line);
+    const ready = !!(current && current.line);
+    driveBtn.disabled = !ready;
+    drive3dBtn.disabled = !ready;
   }
 
   function newRoute() {
@@ -188,6 +191,12 @@ function initFreeDraw() {
     if (current && current.line) {
       game.track = current.line.coordinates;
       openScreen("drive");
+    }
+  });
+  drive3dBtn.addEventListener("click", () => {
+    if (current && current.line) {
+      game.track = current.line.coordinates;
+      openScreen("drive3d");
     }
   });
 

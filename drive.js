@@ -7,7 +7,7 @@ const CAR = {
   brake: 30,
   coast: 7,
   offRoad: 10,
-  steer: 130,
+  steer: 68,
   roadWidth: 24,
 };
 
@@ -202,8 +202,9 @@ function initDrive() {
     }
 
     const steer = (input.right ? 1 : 0) - (input.left ? 1 : 0);
-    if (steer && Math.abs(car.speed) > 0.4) {
-      const factor = Math.min(1, Math.abs(car.speed) / 9);
+    const absSpeed = Math.abs(car.speed);
+    if (steer && absSpeed > 0.4) {
+      const factor = Math.min(1, absSpeed / 8) * (1 - Math.min(0.4, absSpeed / 130));
       car.heading =
         (car.heading + steer * CAR.steer * factor * dt * Math.sign(car.speed) + 360) % 360;
     }

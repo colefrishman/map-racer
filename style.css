@@ -234,11 +234,35 @@ button.back:hover { background: #eee; }
 
 .panel button.cta:disabled { background: #cbd5e1; }
 
+.panel button.cta.ghost {
+  color: #0f172a;
+  background: #e2e8f0;
+}
+
+.panel button.cta.ghost:hover { background: #cbd5e1; }
+
+.panel button.cta.ghost:disabled {
+  color: #94a3b8;
+  background: #e2e8f0;
+}
+
 /* ---------- Drive screen ---------- */
 
 #drive-map {
   position: absolute;
   inset: 0;
+}
+
+#drive3d {
+  background: #9fc4e8;
+}
+
+#drive3d-canvas {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
 }
 
 .drive-hud {

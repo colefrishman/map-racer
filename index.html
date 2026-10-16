@@ -6,6 +6,16 @@
   <title>Earth Racer</title>
   <link href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" rel="stylesheet" />
   <link rel="stylesheet" href="style.css" />
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/",
+        "@mapbox/vector-tile": "https://cdn.jsdelivr.net/npm/@mapbox/vector-tile@2.0.3/+esm",
+        "pbf": "https://cdn.jsdelivr.net/npm/pbf@4.0.1/+esm"
+      }
+    }
+  </script>
 </head>
 <body>
   <section id="home" class="screen">
@@ -22,6 +32,11 @@
         <button class="mode-card" type="button" data-screen="drive">
           <span class="mode-title">Drive</span>
           <span class="mode-desc">Get in a car and follow the route you drew.</span>
+        </button>
+
+        <button class="mode-card" type="button" data-screen="drive3d">
+          <span class="mode-title">Drive 3D</span>
+          <span class="mode-desc">Cruise your route in first person with real 3D buildings.</span>
         </button>
 
         <div class="mode-card disabled">
@@ -72,6 +87,10 @@
 
       <button id="drive-route" class="cta" type="button" disabled>
         Drive this route &rarr;
+      </button>
+
+      <button id="drive-route-3d" class="cta ghost" type="button" disabled>
+        Drive in 3D &rarr;
       </button>
 
       <p id="status" class="status">Click a road to start.</p>
@@ -135,10 +154,74 @@
     </div>
   </section>
 
+  <section id="drive3d" class="screen hidden">
+    <canvas id="drive3d-canvas"></canvas>
+
+    <div class="drive-hud">
+      <button class="back" type="button" data-screen="home">&larr; Back</button>
+
+      <div class="stat">
+        <span id="d3-speed">0</span><small id="d3-speed-unit">mph</small>
+      </div>
+
+      <div class="units-toggle compact">
+        <button type="button" data-units="imperial">mph</button>
+        <button type="button" data-units="metric">km/h</button>
+      </div>
+      <div class="bar">
+        <div id="d3-progress-fill"></div>
+      </div>
+      <div class="stat small">
+        <span id="d3-progress">0%</span> of route
+      </div>
+
+      <button id="d3-restart" class="cta" type="button">Restart</button>
+      <div id="d3-warning" class="warning hidden">Off road!</div>
+    </div>
+
+    <div id="d3-empty" class="drive-overlay hidden">
+      <p>You haven't drawn a route yet.</p>
+      <button class="cta" type="button" data-screen="free-draw">Draw a route</button>
+    </div>
+
+    <div id="d3-end" class="drive-overlay hidden">
+      <div class="end-card">
+        <h2>Route complete!</h2>
+        <p>
+          You drove <strong id="d3-end-distance">0 mi</strong> in
+          <strong id="d3-end-time">0:00</strong>.
+        </p>
+        <button id="d3-again" class="cta" type="button">Drive again</button>
+        <button class="cta ghost" type="button" data-screen="home">Back to home</button>
+      </div>
+    </div>
+
+    <div class="drive-controls">
+      <div class="pad">
+        <button id="d3-left" class="ctrl" type="button" aria-label="Steer left">&#9664;</button>
+        <button id="d3-right" class="ctrl" type="button" aria-label="Steer right">&#9654;</button>
+      </div>
+      <div class="pad">
+        <button id="d3-brake" class="ctrl" type="button" aria-label="Brake / reverse">&#9660;</button>
+        <button id="d3-accel" class="ctrl" type="button" aria-label="Accelerate">&#9650;</button>
+      </div>
+    </div>
+  </section>
+
   <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
   <script src="units.js"></script>
   <script src="app.js"></script>
   <script src="free-draw.js"></script>
   <script src="drive.js"></script>
+
+  <script type="module">
+    import * as THREE from "three";
+    import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
+    import { VectorTile } from "@mapbox/vector-tile";
+    import Pbf from "pbf";
+    Object.assign(window, { THREE, mergeGeometries, VectorTile, Pbf });
+    window.dispatchEvent(new Event("drive3d-deps-ready"));
+  </script>
+  <script src="drive3d.js"></script>
 </body>
 </html>
