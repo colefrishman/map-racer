@@ -137,6 +137,69 @@ html, body {
   color: #333;
 }
 
+.search {
+  position: relative;
+  margin-top: 6px;
+}
+
+.search input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  font-size: 13px;
+  color: #111;
+  border: 1px solid #ccc;
+  border-radius: 7px;
+  background: #fff;
+}
+
+.search input:focus {
+  outline: none;
+  border-color: #2563eb;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.25);
+}
+
+.search-results {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 5;
+  max-height: 220px;
+  overflow-y: auto;
+  border: 1px solid #ccc;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
+}
+
+.search-results.hidden { display: none; }
+
+.search-results button {
+  display: block;
+  width: 100%;
+  margin: 0;
+  padding: 8px 10px;
+  text-align: left;
+  font-size: 12.5px;
+  line-height: 1.35;
+  color: #222;
+  border: 0;
+  border-bottom: 1px solid #eee;
+  border-radius: 0;
+  background: #fff;
+  cursor: pointer;
+}
+
+.search-results button:last-child { border-bottom: 0; }
+.search-results button:hover { background: #eef2ff; }
+
+.search-results .empty {
+  padding: 8px 10px;
+  font-size: 12px;
+  color: #888;
+}
+
 input[type="color"] {
   height: 38px;
   width: 66px;

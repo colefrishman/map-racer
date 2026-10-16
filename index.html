@@ -66,6 +66,20 @@
         extend the current route, or start a new one.
       </p>
 
+      <div class="field">
+        <span>Start location</span>
+        <div class="search">
+          <input
+            id="search"
+            type="text"
+            placeholder="Search a place, address, city…"
+            autocomplete="off"
+            spellcheck="false"
+          />
+          <div id="search-results" class="search-results hidden"></div>
+        </div>
+      </div>
+
       <label class="field">
         Route color
         <input type="color" id="color" value="#e63946" />
@@ -95,7 +109,8 @@
 
       <p id="status" class="status">Click a road to start.</p>
       <small class="credit">
-        OpenFreeMap / OpenStreetMap tiles · public OSRM routing · internet required.
+        OpenFreeMap / OpenStreetMap tiles · public OSRM routing · Photon search ·
+        internet required.
       </small>
     </div>
   </section>

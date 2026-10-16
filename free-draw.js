@@ -7,6 +7,8 @@ function initFreeDraw() {
   const statusEl = document.getElementById("status");
   const driveBtn = document.getElementById("drive-route");
   const drive3dBtn = document.getElementById("drive-route-3d");
+  const searchInput = document.getElementById("search");
+  const resultsEl = document.getElementById("search-results");
 
   const map = new maplibregl.Map({
     container: "map",
@@ -198,6 +200,103 @@ function initFreeDraw() {
       game.track = current.line.coordinates;
       openScreen("drive3d");
     }
+  });
+
+  let searchTimer = null;
+  let searchSeq = 0;
+
+  function hideResults() {
+    resultsEl.classList.add("hidden");
+    resultsEl.innerHTML = "";
+  }
+
+  function showMessage(text) {
+    const div = document.createElement("div");
+    div.className = "empty";
+    div.textContent = text;
+    resultsEl.innerHTML = "";
+    resultsEl.appendChild(div);
+    resultsEl.classList.remove("hidden");
+  }
+
+  function resultLabel(props) {
+    const parts = [];
+    if (props.name) parts.push(props.name);
+    const locality = props.city || props.district || props.county || props.state;
+    if (locality && locality !== props.name) parts.push(locality);
+    if (props.country && props.country !== props.name) parts.push(props.country);
+    return [...new Set(parts)].join(", ") || "Unnamed place";
+  }
+
+  function addStartPoint(lng, lat) {
+    if (!current) newRoute();
+    current.points.push([lng, lat]);
+    traceActiveRoute();
+  }
+
+  function showResults(features) {
+    if (!features.length) {
+      showMessage("No matches.");
+      return;
+    }
+    resultsEl.innerHTML = "";
+    for (const feature of features) {
+      const [lng, lat] = feature.geometry.coordinates;
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.textContent = resultLabel(feature.properties || {});
+      btn.addEventListener("click", () => {
+        hideResults();
+        searchInput.value = "";
+        map.flyTo({ center: [lng, lat], zoom: 16, duration: 1200 });
+        addStartPoint(lng, lat);
+      });
+      resultsEl.appendChild(btn);
+    }
+    resultsEl.classList.remove("hidden");
+  }
+
+  async function runSearch(query) {
+    const seq = ++searchSeq;
+    try {
+      const url = `https://photon.komoot.io/api/?limit=6&q=${encodeURIComponent(query)}`;
+      const res = await fetch(url);
+      if (!res.ok) throw new Error("search service unavailable");
+      const data = await res.json();
+      if (seq !== searchSeq) return;
+      showResults(data.features || []);
+    } catch (err) {
+      if (seq !== searchSeq) return;
+      showMessage(err.message);
+    }
+  }
+
+  searchInput.addEventListener("input", () => {
+    const query = searchInput.value.trim();
+    clearTimeout(searchTimer);
+    if (query.length < 3) {
+      hideResults();
+      return;
+    }
+    searchTimer = setTimeout(() => runSearch(query), 300);
+  });
+
+  searchInput.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      hideResults();
+      searchInput.blur();
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      const query = searchInput.value.trim();
+      if (query.length >= 2) {
+        clearTimeout(searchTimer);
+        runSearch(query);
+      }
+    }
+  });
+
+  document.addEventListener("click", (e) => {
+    if (!e.target.closest(".search")) hideResults();
   });
 
   return map;
