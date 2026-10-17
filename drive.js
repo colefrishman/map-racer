@@ -11,6 +11,10 @@ const CAR = {
   roadWidth: 24,
 };
 
+const M = 111320;
+const LINE_HALF = 10;
+const START_BACK = 8;
+
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
 function haversine(a, b) {
@@ -64,12 +68,16 @@ function initDrive() {
     loadedRef: null,
     cum: [],
     total: 0,
+    origin: null,
     car: { lon: 0, lat: 0, heading: 0, speed: 0 },
     input: { left: false, right: false, accel: false, brake: false },
     offRoad: false,
     progress: 0,
     done: false,
+    started: false,
     startedAt: null,
+    startLine: null,
+    finishLine: null,
     lastTime: 0,
   };
 
@@ -88,12 +96,38 @@ function initDrive() {
     </svg>`;
   const carMarker = new maplibregl.Marker({ element: carEl, rotationAlignment: "viewport" });
 
-  const startMarker = new maplibregl.Marker({
-    element: Object.assign(document.createElement("div"), { className: "stop start" }),
-  });
-  const endMarker = new maplibregl.Marker({
-    element: Object.assign(document.createElement("div"), { className: "stop end" }),
-  });
+  function toWorld(lon, lat) {
+    const o = state.origin;
+    return { x: (lon - o.lon) * M * o.cosLat, z: (lat - o.lat) * M };
+  }
+
+  // A race line anchored at "anchor", perpendicular to the from -> to direction
+  // (so it can sit at the start/finish while facing the direction of travel).
+  function raceLine(anchor, from, to) {
+    const cosLat = Math.cos((anchor[1] * Math.PI) / 180);
+    const ex = (to[0] - from[0]) * M * cosLat;
+    const ny = (to[1] - from[1]) * M;
+    const len = Math.hypot(ex, ny) || 1;
+    const de = ex / len;
+    const dn = ny / len;
+    const px = -dn;
+    const pn = de;
+    const end = (s) => [anchor[0] + (px * s) / (M * cosLat), anchor[1] + (pn * s) / M];
+    return { P: toWorld(anchor[0], anchor[1]), dir: { x: de, z: dn }, coords: [end(-LINE_HALF), end(LINE_HALF)] };
+  }
+
+  function crossLine(from, to, line) {
+    const P = line.P;
+    const d = line.dir;
+    const sp = (from.x - P.x) * d.x + (from.z - P.z) * d.z;
+    const sc = (to.x - P.x) * d.x + (to.z - P.z) * d.z;
+    if (!(sp < 0 && sc >= 0)) return false;
+    const t = sp === sc ? 0 : sp / (sp - sc);
+    const cx = from.x + (to.x - from.x) * t;
+    const cz = from.z + (to.z - from.z) * t;
+    const lat = Math.abs((cx - P.x) * -d.z + (cz - P.z) * d.x);
+    return lat <= LINE_HALF;
+  }
 
   function nearest(lon, lat) {
     const track = state.track;
@@ -123,12 +157,21 @@ function initDrive() {
 
   function resetCar() {
     const track = state.track;
-    state.car.lon = track[0][0];
-    state.car.lat = track[0][1];
+    const line = state.startLine;
+    let lon = track[0][0];
+    let lat = track[0][1];
+    if (line) {
+      const cosLat = Math.cos((lat * Math.PI) / 180);
+      lon -= (line.dir.x * START_BACK) / (M * cosLat);
+      lat -= (line.dir.z * START_BACK) / M;
+    }
+    state.car.lon = lon;
+    state.car.lat = lat;
     state.car.heading = track.length > 1 ? bearing(track[0], track[1]) : 0;
     state.car.speed = 0;
     state.progress = 0;
     state.done = false;
+    state.started = false;
     state.offRoad = false;
     state.startedAt = null;
     el.end.classList.add("hidden");
@@ -150,6 +193,7 @@ function initDrive() {
       state.cum.push(total);
     }
     state.total = total;
+    state.origin = { lon: path[0][0], lat: path[0][1], cosLat: Math.cos((path[0][1] * Math.PI) / 180) };
 
     const source = map.getSource("track");
     if (source) {
@@ -160,10 +204,19 @@ function initDrive() {
       });
     }
 
-    startMarker.setLngLat(path[0]);
-    endMarker.setLngLat(path[path.length - 1]);
-    if (!startMarker.getElement().isConnected) startMarker.addTo(map);
-    if (!endMarker.getElement().isConnected) endMarker.addTo(map);
+    const last = path.length - 1;
+    state.startLine = raceLine(path[0], path[0], path[1] || path[0]);
+    state.finishLine = raceLine(path[last], path[last - 1] || path[last], path[last]);
+    const lines = map.getSource("race-lines");
+    if (lines) {
+      lines.setData({
+        type: "FeatureCollection",
+        features: [
+          { type: "Feature", properties: { kind: "start" }, geometry: { type: "LineString", coordinates: state.startLine.coords } },
+          { type: "Feature", properties: { kind: "finish" }, geometry: { type: "LineString", coordinates: state.finishLine.coords } },
+        ],
+      });
+    }
 
     resetCar();
   }
@@ -197,9 +250,8 @@ function initDrive() {
     if (state.done) car.speed = Math.max(0, car.speed);
     car.speed = clamp(car.speed, CAR.maxReverse, CAR.maxForward);
 
-    if (state.startedAt === null && Math.abs(car.speed) > 0.5) {
-      state.startedAt = performance.now();
-    }
+    const prevLon = car.lon;
+    const prevLat = car.lat;
 
     const steer = (input.right ? 1 : 0) - (input.left ? 1 : 0);
     const absSpeed = Math.abs(car.speed);
@@ -222,10 +274,19 @@ function initDrive() {
 
     const at = nearest(car.lon, car.lat);
     state.progress = state.total ? clamp(at.along / state.total, 0, 1) : 0;
-    const finishAt = state.total - Math.min(25, state.total * 0.2);
-    if (!state.done && state.total && at.along >= finishAt) {
-      state.done = true;
-      finishRoute();
+
+    // Race lines: cross the start line to begin, cross the finish line to win.
+    if (!state.done) {
+      const from = toWorld(prevLon, prevLat);
+      const to = toWorld(car.lon, car.lat);
+      if (!state.started && state.startLine && crossLine(from, to, state.startLine)) {
+        state.started = true;
+        state.startedAt = performance.now();
+      }
+      if (state.finishLine && crossLine(from, to, state.finishLine)) {
+        state.done = true;
+        finishRoute();
+      }
     }
   }
 
@@ -339,6 +400,31 @@ function initDrive() {
       source: "track",
       layout: { "line-cap": "round", "line-join": "round" },
       paint: { "line-color": "#2563eb", "line-width": 6, "line-opacity": 0.85 },
+    });
+
+    map.addSource("race-lines", {
+      type: "geojson",
+      data: { type: "FeatureCollection", features: [] },
+    });
+    map.addLayer({
+      id: "race-casing",
+      type: "line",
+      source: "race-lines",
+      paint: { "line-color": "#ffffff", "line-width": 12 },
+    });
+    map.addLayer({
+      id: "race-start",
+      type: "line",
+      source: "race-lines",
+      filter: ["==", ["get", "kind"], "start"],
+      paint: { "line-color": "#16a34a", "line-width": 8 },
+    });
+    map.addLayer({
+      id: "race-finish",
+      type: "line",
+      source: "race-lines",
+      filter: ["==", ["get", "kind"], "finish"],
+      paint: { "line-color": "#111111", "line-width": 8, "line-dasharray": [1, 1] },
     });
 
     state.ready = true;

@@ -7,9 +7,22 @@ const M_PER_DEG_LAT = 111320;
 const EYE_HEIGHT = 1.7;
 const ROAD_WIDTH = 9;
 
-const WATER_Y = 0.02;
-const AREA_Y = 0.03;
-const ROAD_Y = 0.08;
+const TERRAIN_ON = true;
+const TERRAIN_Z = 14;
+const BASE_GRID = 220;
+const DRAPE_STEP = 12;
+const DRAPE_MAXN = 40;
+const FOUNDATION = 6;
+
+// Layer heights above the terrain. These must exceed the small mismatch between
+// the base ground grid and the independently-draped overlays, otherwise layers
+// flicker through / sink into the ground. Flat overlays at this scale look flush.
+const WATER_Y = 0.05;
+const AREA_LAYER_BASE = { water: WATER_Y, landcover: 0.25, landuse: 0.4, park: 0.55 };
+const AREA_LAYER_BAND = { water: 0.01, landcover: 0.1, landuse: 0.1, park: 0.1 };
+const ROAD_Y = 0.75;
+const ROUTE_Y = 0.9;
+const BASE_SINK = 0.15;
 
 const CAR = {
   maxForward: 42,
@@ -22,6 +35,13 @@ const CAR = {
   roadWidth: 24,
   radius: 1.4,
 };
+
+const WATER_MARGIN = 6;
+const LINE_HALF = 10;
+const LINE_DEPTH = 4;
+const LINE_COLS = 10;
+const LINE_Y = 1.05;
+const START_BACK = 8;
 
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
@@ -49,6 +69,82 @@ function fetchTileBuffer(template, z, x, y) {
   return tileBufferCache.get(url);
 }
 
+const demTiles = new Map();
+const demPromises = new Map();
+const DEM_URL = (z, x, y) =>
+  `https://s3.amazonaws.com/elevation-tiles-prod/terrarium/${z}/${x}/${y}.png`;
+
+// Terrarium heightmap: height (m) = R*256 + G + B/256 - 32768.
+function loadDem(z, x, y) {
+  const key = `${z}/${x}/${y}`;
+  if (demTiles.has(key)) return Promise.resolve(demTiles.get(key));
+  if (demPromises.has(key)) return demPromises.get(key);
+  const promise = new Promise((resolve) => {
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    img.onload = () => {
+      try {
+        const w = img.width || 256;
+        const h = img.height || 256;
+        const cv = document.createElement("canvas");
+        cv.width = w;
+        cv.height = h;
+        const ctx = cv.getContext("2d");
+        ctx.drawImage(img, 0, 0, w, h);
+        const data = ctx.getImageData(0, 0, w, h).data;
+        const heights = new Float32Array(w * h);
+        for (let i = 0; i < w * h; i++) {
+          heights[i] = data[i * 4] * 256 + data[i * 4 + 1] + data[i * 4 + 2] / 256 - 32768;
+        }
+        resolve({ w, h, heights });
+      } catch {
+        resolve(null);
+      }
+    };
+    img.onerror = () => resolve(null);
+    img.src = DEM_URL(z, x, y);
+  }).then((v) => {
+    demTiles.set(key, v);
+    demPromises.delete(key);
+    while (demTiles.size > 64) {
+      const oldest = demTiles.keys().next().value;
+      if (oldest === key) break;
+      demTiles.delete(oldest);
+    }
+    return v;
+  });
+  demPromises.set(key, promise);
+  return promise;
+}
+
+function demValue(dem, u, v) {
+  const { w, h, heights } = dem;
+  const x = clamp(u, 0, w - 1);
+  const y = clamp(v, 0, h - 1);
+  const x0 = Math.floor(x);
+  const y0 = Math.floor(y);
+  const x1 = Math.min(w - 1, x0 + 1);
+  const y1 = Math.min(h - 1, y0 + 1);
+  const fx = x - x0;
+  const fy = y - y0;
+  const a = heights[y0 * w + x0];
+  const b = heights[y0 * w + x1];
+  const c = heights[y1 * w + x0];
+  const d = heights[y1 * w + x1];
+  return (a * (1 - fx) + b * fx) * (1 - fy) + (c * (1 - fx) + d * fx) * fy;
+}
+
+function sampleDem(lon, lat) {
+  const z = TERRAIN_Z;
+  const tx = lonToTileX(lon, z);
+  const ty = latToTileY(lat, z);
+  const xi = Math.floor(tx);
+  const yi = Math.floor(ty);
+  const dem = demTiles.get(`${z}/${xi}/${yi}`);
+  if (!dem) return 0;
+  return demValue(dem, (tx - xi) * dem.w - 0.5, (ty - yi) * dem.h - 0.5);
+}
+
 let tileTemplatePromise = null;
 function getTileTemplate() {
   if (!tileTemplatePromise) {
@@ -68,6 +164,7 @@ function initDrive3D() {
     progress: document.getElementById("d3-progress"),
     progressFill: document.getElementById("d3-progress-fill"),
     warning: document.getElementById("d3-warning"),
+    water: document.getElementById("d3-water"),
     empty: document.getElementById("d3-empty"),
     end: document.getElementById("d3-end"),
     endDistance: document.getElementById("d3-end-distance"),
@@ -75,7 +172,11 @@ function initDrive3D() {
     controls: document.querySelector("#drive3d .drive-controls"),
   };
 
-  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+  const renderer = new THREE.WebGLRenderer({
+    canvas,
+    antialias: true,
+    logarithmicDepthBuffer: true,
+  });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
 
   const scene = new THREE.Scene();
@@ -94,16 +195,10 @@ function initDrive3D() {
   const markerGroup = new THREE.Group();
   scene.add(chunkGroup, routeGroup, markerGroup);
 
-  const baseMaterial = new THREE.MeshBasicMaterial({ color: 0xe6e4dc });
+  const baseMaterial = new THREE.MeshBasicMaterial({ color: 0xe6e4dc, side: THREE.DoubleSide });
   const flatMaterial = new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide });
   const buildingMaterial = new THREE.MeshLambertMaterial({ vertexColors: true });
-  const routeMaterial = new THREE.MeshBasicMaterial({
-    color: 0x2563eb,
-    side: THREE.DoubleSide,
-    polygonOffset: true,
-    polygonOffsetFactor: -2,
-    polygonOffsetUnits: -2,
-  });
+  const routeMaterial = new THREE.MeshBasicMaterial({ color: 0x2563eb, side: THREE.DoubleSide });
 
   const state = {
     track: null,
@@ -116,12 +211,16 @@ function initDrive3D() {
     offRoad: false,
     progress: 0,
     done: false,
+    started: false,
     startedAt: null,
+    startLine: null,
+    finishLine: null,
     lastTime: 0,
     chunks: new Map(),
     chunkCenter: null,
     nextTileCheck: 0,
     blocked: false,
+    waterUntil: 0,
   };
 
   function toWorld(lon, lat) {
@@ -132,11 +231,21 @@ function initDrive3D() {
     };
   }
 
+  // Ground elevation (m) at a world-space point, from the DEM.
+  function terrainY(x, z) {
+    if (!TERRAIN_ON || !state.origin) return 0;
+    const o = state.origin;
+    const lon = o.lon + x / (M_PER_DEG_LAT * o.cosLat);
+    const lat = o.lat - z / M_PER_DEG_LAT;
+    return sampleDem(lon, lat);
+  }
+
   function nearest(lon, lat) {
     const track = state.track;
     const cosLat = Math.cos((lat * Math.PI) / 180);
     let bestDist = Infinity;
     let bestAlong = 0;
+    let bestI = 0;
     for (let i = 0; i < track.length - 1; i++) {
       const ax = (track[i][0] - lon) * M_PER_DEG_LAT * cosLat;
       const ay = (track[i][1] - lat) * M_PER_DEG_LAT;
@@ -151,9 +260,22 @@ function initDrive3D() {
       if (dist < bestDist) {
         bestDist = dist;
         bestAlong = state.cum[i] + t * (state.cum[i + 1] - state.cum[i]);
+        bestI = i;
       }
     }
-    return { dist: bestDist, along: bestAlong };
+    const a = track[bestI];
+    const b = track[bestI + 1] || a;
+    const segLen = state.cum[bestI + 1] - state.cum[bestI];
+    const ratio = segLen ? (bestAlong - state.cum[bestI]) / segLen : 0;
+    let heading = bearing(a, b);
+    heading = ((heading % 360) + 360) % 360;
+    return {
+      dist: bestDist,
+      along: bestAlong,
+      lon: a[0] + (b[0] - a[0]) * ratio,
+      lat: a[1] + (b[1] - a[1]) * ratio,
+      heading,
+    };
   }
 
   const pointInRing = (ring, x, z) => {
@@ -209,6 +331,23 @@ function initDrive3D() {
     return false;
   }
 
+  function inWater(lon, lat) {
+    const w = toWorld(lon, lat);
+    const g = terrainY(w.x, w.z);
+    for (const chunk of state.chunks.values()) {
+      const rings = chunk.water;
+      if (!rings || !rings.length) continue;
+      for (let i = 0; i < rings.length; i++) {
+        const r = rings[i];
+        if (w.x < r.minX || w.x > r.maxX || w.z < r.minZ || w.z > r.maxZ) continue;
+        // Only wet where the ground sits at/below this body's flat water sheet;
+        // above it the draped land has covered the water.
+        if (g <= (r.level || 0) + WATER_Y + 0.5 && pointInRing(r.ring, w.x, w.z)) return true;
+      }
+    }
+    return false;
+  }
+
   function disposeGroup(group) {
     for (const child of [...group.children]) {
       group.remove(child);
@@ -220,12 +359,27 @@ function initDrive3D() {
   const GROUND_COLORS = {
     water: new THREE.Color(0x9dc3e6),
     park: new THREE.Color(0xc3e6a8),
+    natureReserve: new THREE.Color(0xaed694),
+    nationalPark: new THREE.Color(0x9fd08a),
     grass: new THREE.Color(0xcdebb0),
-    wood: new THREE.Color(0xa9cf9a),
+    meadow: new THREE.Color(0xd9ecb8),
+    villageGreen: new THREE.Color(0xbfe0a0),
+    garden: new THREE.Color(0xb7dd98),
+    recreation: new THREE.Color(0xc8e6a4),
+    wood: new THREE.Color(0x9cc79a),
     farm: new THREE.Color(0xeef0d5),
+    orchard: new THREE.Color(0xd8e6b0),
+    vineyard: new THREE.Color(0xd0dca0),
     sand: new THREE.Color(0xf0e8c8),
     rock: new THREE.Color(0xdcdcd2),
-    wetland: new THREE.Color(0xc9e0d4),
+    wetland: new THREE.Color(0xb9d8c8),
+    pitch: new THREE.Color(0x8fc46b),
+    playground: new THREE.Color(0xf0d2a0),
+    track: new THREE.Color(0xd79a6a),
+    themePark: new THREE.Color(0xf3c6a2),
+    cemetery: new THREE.Color(0xaec6a2),
+    military: new THREE.Color(0xc2c8ac),
+    flowerbed: new THREE.Color(0xe6b8c8),
     residential: new THREE.Color(0xe4e2dd),
     commercial: new THREE.Color(0xe8dcd4),
     institution: new THREE.Color(0xeceae2),
@@ -237,19 +391,43 @@ function initDrive3D() {
   };
 
   function groundAreaColor(layerName, p) {
-    if (layerName === "water") return GROUND_COLORS.water;
-    if (layerName === "park") return GROUND_COLORS.park;
     const cls = p.class;
     const sub = p.subclass;
+    if (layerName === "water") return GROUND_COLORS.water;
+    if (layerName === "park") {
+      if (cls === "nature_reserve") return GROUND_COLORS.natureReserve;
+      if (cls === "national_park") return GROUND_COLORS.nationalPark;
+      if (cls === "marine") return GROUND_COLORS.water;
+      return GROUND_COLORS.park;
+    }
     if (layerName === "landcover") {
-      if (cls === "wood" || sub === "wood" || sub === "forest") return GROUND_COLORS.wood;
-      if (cls === "farmland" || cls === "farm") return GROUND_COLORS.farm;
+      if (sub === "wood" || cls === "wood" || sub === "forest") return GROUND_COLORS.wood;
+      if (sub === "garden") return GROUND_COLORS.garden;
+      if (sub === "park") return GROUND_COLORS.park;
+      if (sub === "recreation_ground") return GROUND_COLORS.recreation;
+      if (sub === "flowerbed") return GROUND_COLORS.flowerbed;
+      if (sub === "grass" || cls === "grass") return GROUND_COLORS.grass;
+      if (cls === "farmland" || cls === "farm" || sub === "farmland") return GROUND_COLORS.farm;
       if (cls === "sand" || sub === "sand" || sub === "beach") return GROUND_COLORS.sand;
-      if (cls === "rock" || sub === "rock") return GROUND_COLORS.rock;
+      if (cls === "rock" || sub === "rock" || sub === "bare_rock") return GROUND_COLORS.rock;
       if (cls === "wetland" || sub === "wetland") return GROUND_COLORS.wetland;
       return GROUND_COLORS.grass;
     }
     if (layerName === "landuse") {
+      if (cls === "pitch") return GROUND_COLORS.pitch;
+      if (cls === "playground") return GROUND_COLORS.playground;
+      if (cls === "track") return GROUND_COLORS.track;
+      if (cls === "theme_park") return GROUND_COLORS.themePark;
+      if (cls === "garden") return GROUND_COLORS.garden;
+      if (cls === "park") return GROUND_COLORS.park;
+      if (cls === "recreation_ground") return GROUND_COLORS.recreation;
+      if (cls === "cemetery" || cls === "grave_yard") return GROUND_COLORS.cemetery;
+      if (cls === "military") return GROUND_COLORS.military;
+      if (cls === "grass") return GROUND_COLORS.grass;
+      if (cls === "meadow") return GROUND_COLORS.meadow;
+      if (cls === "village_green") return GROUND_COLORS.villageGreen;
+      if (cls === "orchard") return GROUND_COLORS.orchard;
+      if (cls === "vineyard") return GROUND_COLORS.vineyard;
       if (cls === "residential" || cls === "suburb" || cls === "neighbourhood" || cls === "quarter")
         return GROUND_COLORS.residential;
       if (
@@ -269,22 +447,8 @@ function initDrive3D() {
         cls === "kindergarten"
       )
         return GROUND_COLORS.institution;
-      if (
-        cls === "pitch" ||
-        cls === "playground" ||
-        cls === "theme_park" ||
-        cls === "recreation_ground" ||
-        cls === "garden" ||
-        cls === "park" ||
-        cls === "cemetery" ||
-        cls === "military" ||
-        cls === "track" ||
-        cls === "grass" ||
-        cls === "meadow" ||
-        cls === "village_green"
-      )
-        return GROUND_COLORS.grass;
       if (cls === "sand") return GROUND_COLORS.sand;
+      if (cls === "farmland" || cls === "farm") return GROUND_COLORS.farm;
       return null;
     }
     return null;
@@ -324,7 +488,51 @@ function initDrive3D() {
     return out;
   }
 
-  function pushPolygon(geometry, color, y, positions, colors) {
+  // A flat polygon only gets raised at its (sparse) boundary vertices, so its
+  // interior chord sinks below (convex) or pokes through (concave) the terrain.
+  // Subdivide each triangle and sample the DEM so the layer drapes over hills.
+  function drapeTriangle(a, b, c, y, color, positions, colors) {
+    const ab = Math.hypot(b.x - a.x, b.y - a.y);
+    const bc = Math.hypot(c.x - b.x, c.y - b.y);
+    const ca = Math.hypot(a.x - c.x, a.y - c.y);
+    const n = clamp(Math.ceil(Math.max(ab, bc, ca) / DRAPE_STEP), 1, DRAPE_MAXN);
+    const emit = (p) => {
+      positions.push(p[0], p[1], p[2]);
+      colors.push(color.r, color.g, color.b);
+    };
+    if (n === 1) {
+      emit([a.x, y + terrainY(a.x, a.y), a.y]);
+      emit([b.x, y + terrainY(b.x, b.y), b.y]);
+      emit([c.x, y + terrainY(c.x, c.y), c.y]);
+      return;
+    }
+    const grid = new Map();
+    const P = (i, j) => {
+      const key = i * (DRAPE_MAXN + 1) + j;
+      let v = grid.get(key);
+      if (!v) {
+        const x = a.x + (i / n) * (b.x - a.x) + (j / n) * (c.x - a.x);
+        const z = a.y + (i / n) * (b.y - a.y) + (j / n) * (c.y - a.y);
+        v = [x, y + terrainY(x, z), z];
+        grid.set(key, v);
+      }
+      return v;
+    };
+    for (let i = 0; i < n; i++) {
+      for (let j = 0; j < n - i; j++) {
+        emit(P(i, j));
+        emit(P(i + 1, j));
+        emit(P(i, j + 1));
+        if (j < n - i - 1) {
+          emit(P(i + 1, j));
+          emit(P(i + 1, j + 1));
+          emit(P(i, j + 1));
+        }
+      }
+    }
+  }
+
+  function pushPolygon(geometry, color, y, positions, colors, flat) {
     if (!geometry) return;
     const polys =
       geometry.type === "Polygon"
@@ -352,37 +560,57 @@ function initDrive3D() {
 
       const verts = contour.concat(...holes);
       for (const tri of triangles) {
-        for (const idx of tri) {
-          const v = verts[idx];
-          if (!v) continue;
-          positions.push(v.x, y, v.y);
-          colors.push(color.r, color.g, color.b);
+        if (flat) {
+          for (const idx of tri) {
+            const v = verts[idx];
+            if (!v) continue;
+            positions.push(v.x, y, v.y);
+            colors.push(color.r, color.g, color.b);
+          }
+          continue;
         }
+        const a = verts[tri[0]];
+        const b = verts[tri[1]];
+        const c = verts[tri[2]];
+        if (!a || !b || !c) continue;
+        drapeTriangle(a, b, c, y, color, positions, colors);
       }
     }
   }
 
-  function pushRibbon(line, width, y, color, positions, colors) {
+  function pushRibbon(line, width, y, color, positions, colors, flat) {
     const half = width / 2;
     for (let i = 0; i < line.length - 1; i++) {
-      const a = toWorld(line[i][0], line[i][1]);
-      const b = toWorld(line[i + 1][0], line[i + 1][1]);
-      const dx = b.x - a.x;
-      const dz = b.z - a.z;
+      const A = toWorld(line[i][0], line[i][1]);
+      const B = toWorld(line[i + 1][0], line[i + 1][1]);
+      const dx = B.x - A.x;
+      const dz = B.z - A.z;
       const len = Math.hypot(dx, dz);
       if (len < 0.01) continue;
       const nx = (-dz / len) * half;
       const nz = (dx / len) * half;
-      const ax = a.x + nx;
-      const az = a.z + nz;
-      const bx = a.x - nx;
-      const bz = a.z - nz;
-      const cx = b.x - nx;
-      const cz = b.z - nz;
-      const dxe = b.x + nx;
-      const dze = b.z + nz;
-      positions.push(ax, y, az, bx, y, bz, cx, y, cz, ax, y, az, cx, y, cz, dxe, y, dze);
-      for (let k = 0; k < 6; k++) colors.push(color.r, color.g, color.b);
+      const steps = clamp(Math.ceil(len / DRAPE_STEP), 1, 256);
+      for (let k = 0; k < steps; k++) {
+        const t0 = k / steps;
+        const t1 = (k + 1) / steps;
+        const ax = A.x + dx * t0 + nx;
+        const az = A.z + dz * t0 + nz;
+        const bx = A.x + dx * t0 - nx;
+        const bz = A.z + dz * t0 - nz;
+        const cx = A.x + dx * t1 - nx;
+        const cz = A.z + dz * t1 - nz;
+        const dxe = A.x + dx * t1 + nx;
+        const dze = A.z + dz * t1 + nz;
+        positions.push(
+          ax, flat ? y : y + terrainY(ax, az), az,
+          bx, flat ? y : y + terrainY(bx, bz), bz,
+          cx, flat ? y : y + terrainY(cx, cz), cz,
+          ax, flat ? y : y + terrainY(ax, az), az,
+          cx, flat ? y : y + terrainY(cx, cz), cz,
+          dxe, flat ? y : y + terrainY(dxe, dze), dze
+        );
+        for (let m = 0; m < 6; m++) colors.push(color.r, color.g, color.b);
+      }
     }
   }
 
@@ -398,10 +626,89 @@ function initDrive3D() {
     return [];
   }
 
-  function addGroundAreas(vt, x, y, z, positions, colors) {
+  function geoBBoxArea(geo) {
+    const geometry = geo.geometry;
+    if (!geometry) return 0;
+    const polys =
+      geometry.type === "Polygon"
+        ? [geometry.coordinates]
+        : geometry.type === "MultiPolygon"
+          ? geometry.coordinates
+          : null;
+    if (!polys) return 0;
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minZ = Infinity;
+    let maxZ = -Infinity;
+    for (const poly of polys) {
+      for (const [lon, latPt] of poly[0]) {
+        const w = toWorld(lon, latPt);
+        if (w.x < minX) minX = w.x;
+        if (w.x > maxX) maxX = w.x;
+        if (w.z < minZ) minZ = w.z;
+        if (w.z > maxZ) maxZ = w.z;
+      }
+    }
+    return (maxX - minX) * (maxZ - minZ);
+  }
+
+  // A water body is a flat sheet at the mean terrain height of its shoreline.
+  // The DEM already stores the water surface as its flat level, so this keeps
+  // lakes/rivers visible instead of hiding them under the draped land.
+  function waterLevel(geo) {
+    const geometry = geo.geometry;
+    if (!geometry) return 0;
+    const polys =
+      geometry.type === "Polygon"
+        ? [geometry.coordinates]
+        : geometry.type === "MultiPolygon"
+          ? geometry.coordinates
+          : [];
+    let sum = 0;
+    let n = 0;
+    for (const poly of polys) {
+      for (const [lon, latPt] of poly[0]) {
+        const w = toWorld(lon, latPt);
+        sum += terrainY(w.x, w.z);
+        n++;
+      }
+    }
+    return n ? sum / n : 0;
+  }
+
+  function collectWaterRings(geo, waters, level) {
+    const geometry = geo.geometry;
+    if (!geometry) return;
+    const polys =
+      geometry.type === "Polygon"
+        ? [geometry.coordinates]
+        : geometry.type === "MultiPolygon"
+          ? geometry.coordinates
+          : [];
+    for (const poly of polys) {
+      const ring = [];
+      let minX = Infinity;
+      let maxX = -Infinity;
+      let minZ = Infinity;
+      let maxZ = -Infinity;
+      for (const [lon, latPt] of poly[0]) {
+        const w = toWorld(lon, latPt);
+        ring.push({ x: w.x, z: w.z });
+        if (w.x < minX) minX = w.x;
+        if (w.x > maxX) maxX = w.x;
+        if (w.z < minZ) minZ = w.z;
+        if (w.z > maxZ) maxZ = w.z;
+      }
+      if (ring.length >= 3) waters.push({ minX, maxX, minZ, maxZ, ring, level });
+    }
+  }
+
+  function addGroundAreas(vt, x, y, z, positions, colors, waters) {
     for (const name of ["water", "landcover", "landuse", "park"]) {
       const layer = vt.layers[name];
       if (!layer) continue;
+
+      const items = [];
       for (let i = 0; i < layer.length; i++) {
         const feature = layer.feature(i);
         const c = groundAreaColor(name, feature.properties);
@@ -412,7 +719,22 @@ function initDrive3D() {
         } catch {
           continue;
         }
-        pushPolygon(geo.geometry, c, name === "water" ? WATER_Y : AREA_Y, positions, colors);
+        const level = name === "water" ? waterLevel(geo) : 0;
+        items.push({ color: c, geo, area: geoBBoxArea(geo), level });
+        if (name === "water" && waters) collectWaterRings(geo, waters, level);
+      }
+
+      // Larger areas lower, smaller details (fields, paths) on top, so no two
+      // polygons in the same layer are coplanar (which causes z-fighting).
+      items.sort((a, b) => b.area - a.area);
+      const base = AREA_LAYER_BASE[name];
+      const band = AREA_LAYER_BAND[name];
+      const step = Math.min(0.0005, band / (items.length + 1));
+      for (let i = 0; i < items.length; i++) {
+        // Water is always a flat sheet at sea level, never draped on the terrain.
+        const isWater = name === "water";
+        const h = isWater ? WATER_Y + items[i].level + i * step : base + i * step;
+        pushPolygon(items[i].geo.geometry, items[i].color, h, positions, colors, isWater);
       }
     }
   }
@@ -438,7 +760,15 @@ function initDrive3D() {
         if (feature.properties.brunnel === "tunnel") continue;
         const width = feature.properties.class === "river" ? 28 : 4;
         for (const line of lineCoords(feature, x, y, z)) {
-          pushRibbon(line, width, WATER_Y, GROUND_COLORS.water, positions, colors);
+          let sum = 0;
+          let n = 0;
+          for (const [lon, latPt] of line) {
+            const w = toWorld(lon, latPt);
+            sum += terrainY(w.x, w.z);
+            n++;
+          }
+          const level = n ? sum / n : 0;
+          pushRibbon(line, width, WATER_Y + level, GROUND_COLORS.water, positions, colors, true);
         }
       }
     }
@@ -456,15 +786,28 @@ function initDrive3D() {
   function addBaseQuad(group, x, y, z) {
     const nw = toWorld(tileXToLon(x, z), tileYToLat(y, z));
     const se = toWorld(tileXToLon(x + 1, z), tileYToLat(y + 1, z));
+    const n = TERRAIN_ON ? BASE_GRID : 1;
+    const positions = [];
+    const indices = [];
+    for (let j = 0; j <= n; j++) {
+      for (let i = 0; i <= n; i++) {
+        const wx = nw.x + (se.x - nw.x) * (i / n);
+        const wz = nw.z + (se.z - nw.z) * (j / n);
+        positions.push(wx, terrainY(wx, wz) - BASE_SINK, wz);
+      }
+    }
+    for (let j = 0; j < n; j++) {
+      for (let i = 0; i < n; i++) {
+        const a = j * (n + 1) + i;
+        const b = a + 1;
+        const c = a + (n + 1);
+        const d = c + 1;
+        indices.push(a, c, b, b, c, d);
+      }
+    }
     const geometry = new THREE.BufferGeometry();
-    geometry.setAttribute(
-      "position",
-      new THREE.Float32BufferAttribute(
-        [nw.x, 0, nw.z, se.x, 0, nw.z, se.x, 0, se.z, nw.x, 0, se.z],
-        3
-      )
-    );
-    geometry.setIndex([0, 2, 1, 0, 3, 2]);
+    geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+    geometry.setIndex(indices);
     geometry.computeVertexNormals();
     group.add(new THREE.Mesh(geometry, baseMaterial));
   }
@@ -482,11 +825,12 @@ function initDrive3D() {
       chunk.loading = false;
       return;
     }
-    const buffer = await fetchTileBuffer(template, z, x, y);
+    const [buffer] = await Promise.all([fetchTileBuffer(template, z, x, y), loadDem(z, x, y)]);
     if (state.chunks.get(key) !== chunk) return;
 
     const group = new THREE.Group();
     let footprints = [];
+    let waters = [];
     if (buffer && buffer.length) {
       let vt = null;
       try {
@@ -499,7 +843,7 @@ function initDrive3D() {
         const areaColors = [];
         const roadPositions = [];
         const roadColors = [];
-        addGroundAreas(vt, x, y, z, areaPositions, areaColors);
+        addGroundAreas(vt, x, y, z, areaPositions, areaColors, waters);
         addGroundRoads(vt, x, y, z, roadPositions, roadColors);
         addBaseQuad(group, x, y, z);
         buildFlatMesh(areaPositions, areaColors, group);
@@ -515,6 +859,7 @@ function initDrive3D() {
     chunk.loading = false;
     chunk.group = group;
     chunk.footprints = footprints;
+    chunk.water = waters;
     chunkGroup.add(group);
   }
 
@@ -614,14 +959,35 @@ function initDrive3D() {
 
       let geometry;
       try {
-        geometry = new THREE.ExtrudeGeometry(shape, { depth: height, bevelEnabled: false });
+        geometry = new THREE.ExtrudeGeometry(shape, {
+          depth: height + FOUNDATION,
+          bevelEnabled: false,
+        });
       } catch {
         continue;
       }
       if (!geometry.attributes.position || geometry.attributes.position.count === 0) continue;
+
+      // Sit the building on the lowest ground under its footprint (so it never
+      // floats), and extrude a foundation skirt to bury any slope gaps.
+      const worldRing = polygon[0].map(([lon, latPt]) => toWorld(lon, latPt));
+      let baseY = Infinity;
+      let sx = 0;
+      let sz = 0;
+      for (let vi = 0; vi < worldRing.length; vi++) {
+        const w = worldRing[vi];
+        const n = worldRing[(vi + 1) % worldRing.length];
+        sx += w.x;
+        sz += w.z;
+        baseY = Math.min(baseY, terrainY(w.x, w.z));
+        baseY = Math.min(baseY, terrainY((w.x + n.x) / 2, (w.z + n.z) / 2));
+      }
+      baseY = Math.min(baseY, terrainY(sx / worldRing.length, sz / worldRing.length));
+      if (!Number.isFinite(baseY)) baseY = 0;
+
       geometry.clearGroups();
       geometry.rotateX(-Math.PI / 2);
-      geometry.translate(0, minHeight, 0);
+      geometry.translate(0, minHeight + baseY - FOUNDATION, 0);
 
       const c = colorFor(height);
       const count = geometry.attributes.position.count;
@@ -660,8 +1026,63 @@ function initDrive3D() {
   }
 
   // ----- route ribbon -----
+  function addStripe(group, line, colorA, colorB) {
+    const P = line.P;
+    const d = line.dir;
+    const px = -d.z;
+    const pz = d.x;
+    const rows = 2;
+    const cw = (LINE_HALF * 2) / LINE_COLS;
+    const cd = LINE_DEPTH / rows;
+    const positions = [];
+    const colors = [];
+    const ca = new THREE.Color(colorA);
+    const cb = new THREE.Color(colorB);
+    const pt = (u, v) => ({ x: P.x + px * u + d.x * v, z: P.z + pz * u + d.z * v });
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < LINE_COLS; c++) {
+        const u0 = -LINE_HALF + c * cw;
+        const u1 = u0 + cw;
+        const v0 = -LINE_DEPTH / 2 + r * cd;
+        const v1 = v0 + cd;
+        const a = pt(u0, v0);
+        const b = pt(u1, v0);
+        const cc = pt(u1, v1);
+        const e = pt(u0, v1);
+        positions.push(
+          a.x, LINE_Y + terrainY(a.x, a.z), a.z,
+          b.x, LINE_Y + terrainY(b.x, b.z), b.z,
+          cc.x, LINE_Y + terrainY(cc.x, cc.z), cc.z,
+          a.x, LINE_Y + terrainY(a.x, a.z), a.z,
+          cc.x, LINE_Y + terrainY(cc.x, cc.z), cc.z,
+          e.x, LINE_Y + terrainY(e.x, e.z), e.z
+        );
+        const col = (r + c) % 2 === 0 ? ca : cb;
+        for (let k = 0; k < 6; k++) colors.push(col.r, col.g, col.b);
+      }
+    }
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+    geometry.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
+    geometry.computeVertexNormals();
+    group.add(new THREE.Mesh(geometry, flatMaterial));
+  }
+
   function buildRoute() {
-    const path = state.track.map(([lon, lat]) => toWorld(lon, lat));
+    const base = state.track.map(([lon, lat]) => toWorld(lon, lat));
+    const path = [];
+    for (let i = 0; i < base.length; i++) {
+      path.push(base[i]);
+      const nxt = base[i + 1];
+      if (!nxt) break;
+      const dx = nxt.x - base[i].x;
+      const dz = nxt.z - base[i].z;
+      const len = Math.hypot(dx, dz);
+      const steps = clamp(Math.ceil(len / DRAPE_STEP), 1, 256);
+      for (let k = 1; k < steps; k++) {
+        path.push({ x: base[i].x + (dx * k) / steps, z: base[i].z + (dz * k) / steps });
+      }
+    }
     const positions = [];
     const indices = [];
     const half = ROAD_WIDTH / 2;
@@ -674,8 +1095,12 @@ function initDrive3D() {
       const len = Math.hypot(dx, dz) || 1;
       const nx = -dz / len;
       const nz = dx / len;
-      positions.push(path[i].x + nx * half, 0.15, path[i].z + nz * half);
-      positions.push(path[i].x - nx * half, 0.15, path[i].z - nz * half);
+      const lx = path[i].x + nx * half;
+      const lz = path[i].z + nz * half;
+      const rx = path[i].x - nx * half;
+      const rz = path[i].z - nz * half;
+      positions.push(lx, ROUTE_Y + terrainY(lx, lz), lz);
+      positions.push(rx, ROUTE_Y + terrainY(rx, rz), rz);
     }
     for (let i = 0; i < path.length - 1; i++) {
       const a = i * 2;
@@ -691,30 +1116,80 @@ function initDrive3D() {
     routeGroup.add(new THREE.Mesh(geometry, routeMaterial));
 
     disposeGroup(markerGroup);
-    const markerGeo = new THREE.CylinderGeometry(3, 3, 0.3, 20);
-    const start = new THREE.Mesh(markerGeo, new THREE.MeshBasicMaterial({ color: 0x16a34a }));
-    const p0 = path[0];
-    start.position.set(p0.x, 0.2, p0.z);
-    const end = new THREE.Mesh(markerGeo, new THREE.MeshBasicMaterial({ color: 0xdc2626 }));
-    const pN = path[path.length - 1];
-    end.position.set(pN.x, 0.2, pN.z);
-    markerGroup.add(start, end);
+    if (state.startLine) addStripe(markerGroup, state.startLine, 0xffffff, 0x16a34a);
+    if (state.finishLine) addStripe(markerGroup, state.finishLine, 0xffffff, 0x111111);
+  }
+
+  // The DEM streams in per tile, but the route is built the instant the screen
+  // opens (before any tile has loaded), so terrainY reads 0 and the ribbon would
+  // sit at sea level under the real ground. Rebuild it once every tile it crosses
+  // has elevation.
+  function drapeRoute() {
+    const track = state.track;
+    if (!TERRAIN_ON || !track || track.length < 2) return;
+    const seen = new Set();
+    const jobs = [];
+    const want = (lon, lat) => {
+      const z = TERRAIN_Z;
+      const x = Math.floor(lonToTileX(lon, z));
+      const y = Math.floor(latToTileY(lat, z));
+      const key = `${z}/${x}/${y}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      jobs.push(loadDem(z, x, y));
+    };
+    for (let i = 0; i < track.length - 1; i++) {
+      const a = track[i];
+      const b = track[i + 1];
+      const n = Math.max(1, Math.ceil(haversine(a, b) / 800));
+      for (let k = 0; k <= n; k++) {
+        want(a[0] + ((b[0] - a[0]) * k) / n, a[1] + ((b[1] - a[1]) * k) / n);
+      }
+    }
+    Promise.all(jobs).then(() => {
+      if (state.track === track) buildRoute();
+    });
   }
 
   // ----- simulation -----
   function resetCar() {
     const track = state.track;
-    state.car.lon = track[0][0];
-    state.car.lat = track[0][1];
+    const o = state.origin;
+    const line = state.startLine;
+    let lon = track[0][0];
+    let lat = track[0][1];
+    if (line) {
+      lon -= (line.dir.x * START_BACK) / (M_PER_DEG_LAT * o.cosLat);
+      lat += (line.dir.z * START_BACK) / M_PER_DEG_LAT;
+    }
+    state.car.lon = lon;
+    state.car.lat = lat;
     state.car.heading = track.length > 1 ? bearing(track[0], track[1]) : 0;
     state.car.speed = 0;
     state.progress = 0;
     state.done = false;
+    state.started = false;
     state.offRoad = false;
     state.startedAt = null;
     state.blocked = false;
+    state.waterUntil = 0;
     el.end.classList.add("hidden");
     for (const key of Object.keys(state.input)) state.input[key] = false;
+  }
+
+  // True when the movement from -> to crosses the race line (forward only,
+  // within the line's width).
+  function crossLine(from, to, line) {
+    const P = line.P;
+    const d = line.dir;
+    const sp = (from.x - P.x) * d.x + (from.z - P.z) * d.z;
+    const sc = (to.x - P.x) * d.x + (to.z - P.z) * d.z;
+    if (!(sp < 0 && sc >= 0)) return false;
+    const t = sp === sc ? 0 : sp / (sp - sc);
+    const cx = from.x + (to.x - from.x) * t;
+    const cz = from.z + (to.z - from.z) * t;
+    const lat = Math.abs((cx - P.x) * -d.z + (cz - P.z) * d.x);
+    return lat <= LINE_HALF;
   }
 
   function update(dt) {
@@ -730,9 +1205,8 @@ function initDrive3D() {
     if (state.done) car.speed = Math.max(0, car.speed);
     car.speed = clamp(car.speed, CAR.maxReverse, CAR.maxForward);
 
-    if (state.startedAt === null && Math.abs(car.speed) > 0.5) {
-      state.startedAt = performance.now();
-    }
+    const prevLon = car.lon;
+    const prevLat = car.lat;
 
     const steer = (input.right ? 1 : 0) - (input.left ? 1 : 0);
     const absSpeed = Math.abs(car.speed);
@@ -781,12 +1255,35 @@ function initDrive3D() {
       state.blocked = blockedAt(car.lon, car.lat);
     }
 
-    const at = nearest(car.lon, car.lat);
+    let at = nearest(car.lon, car.lat);
+
+    // Driving into water rings you out back onto the route.
+    let teleported = false;
+    if (at.dist > WATER_MARGIN && inWater(car.lon, car.lat)) {
+      car.lon = at.lon;
+      car.lat = at.lat;
+      car.heading = at.heading;
+      car.speed = 0;
+      state.blocked = false;
+      state.waterUntil = performance.now() + 1600;
+      at = nearest(car.lon, car.lat);
+      teleported = true;
+    }
+
     state.progress = state.total ? clamp(at.along / state.total, 0, 1) : 0;
-    const finishAt = state.total - Math.min(25, state.total * 0.2);
-    if (!state.done && state.total && at.along >= finishAt) {
-      state.done = true;
-      finishRoute();
+
+    // Race lines: cross the start line to begin, cross the finish line to win.
+    if (!teleported && !state.done) {
+      const from = toWorld(prevLon, prevLat);
+      const to = toWorld(car.lon, car.lat);
+      if (!state.started && state.startLine && crossLine(from, to, state.startLine)) {
+        state.started = true;
+        state.startedAt = performance.now();
+      }
+      if (state.finishLine && crossLine(from, to, state.finishLine)) {
+        state.done = true;
+        finishRoute();
+      }
     }
   }
 
@@ -796,8 +1293,9 @@ function initDrive3D() {
     const h = (car.heading * Math.PI) / 180;
     const fx = Math.sin(h);
     const fz = -Math.cos(h);
-    camera.position.set(w.x, EYE_HEIGHT, w.z);
-    camera.lookAt(w.x + fx * 60, EYE_HEIGHT - 3, w.z + fz * 60);
+    const gy = terrainY(w.x, w.z);
+    camera.position.set(w.x, gy + EYE_HEIGHT, w.z);
+    camera.lookAt(w.x + fx * 60, gy + EYE_HEIGHT - 3, w.z + fz * 60);
   }
 
   function updateHud() {
@@ -806,6 +1304,7 @@ function initDrive3D() {
     el.progress.textContent = `${Math.round(state.progress * 100)}%`;
     el.progressFill.style.width = `${state.progress * 100}%`;
     el.warning.classList.toggle("hidden", !state.offRoad);
+    el.water.classList.toggle("hidden", !(performance.now() < state.waterUntil));
   }
 
   function finishRoute() {
@@ -858,10 +1357,23 @@ function initDrive3D() {
     }
     state.total = total;
     state.origin = { lon: path[0][0], lat: path[0][1], cosLat: Math.cos((path[0][1] * Math.PI) / 180) };
+    const dirAt = (a, b) => {
+      const w0 = toWorld(a[0], a[1]);
+      const w1 = toWorld(b[0], b[1]);
+      const dx = w1.x - w0.x;
+      const dz = w1.z - w0.z;
+      const len = Math.hypot(dx, dz) || 1;
+      return { x: dx / len, z: dz / len };
+    };
+    const pN = path[path.length - 1];
+    const pM = path[path.length - 2] || pN;
+    state.startLine = { P: toWorld(path[0][0], path[0][1]), dir: dirAt(path[0], path[1] || path[0]) };
+    state.finishLine = { P: toWorld(pN[0], pN[1]), dir: dirAt(pM, pN) };
     clearChunks();
     state.nextTileCheck = 0;
     buildRoute();
     resetCar();
+    drapeRoute();
   }
 
   function syncTrack() {

@@ -390,6 +390,11 @@ button.back:hover { background: #eee; }
   color: #b91c1c;
 }
 
+.warning.water {
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+
 .done {
   background: #dcfce7;
   color: #15803d;
