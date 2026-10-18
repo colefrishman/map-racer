@@ -4,6 +4,15 @@ html, body {
   margin: 0;
   height: 100%;
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  -webkit-text-size-adjust: 100%;
+  -webkit-tap-highlight-color: transparent;
+}
+
+button,
+.ctrl,
+.cta,
+.units-toggle button {
+  touch-action: manipulation;
 }
 
 .screen {
@@ -19,8 +28,7 @@ html, body {
 
 #home {
   display: flex;
-  align-items: center;
-  justify-content: center;
+  overflow-y: auto;
   background: linear-gradient(160deg, #0f172a 0%, #1e3a8a 60%, #2563eb 100%);
   color: #fff;
 }
@@ -28,7 +36,10 @@ html, body {
 .home-inner {
   width: 100%;
   max-width: 720px;
+  margin: auto;
   padding: 32px;
+  padding-top: calc(32px + env(safe-area-inset-top));
+  padding-bottom: calc(32px + env(safe-area-inset-bottom));
   text-align: center;
 }
 
@@ -566,4 +577,80 @@ button.back:hover { background: #eee; }
 #home .units-toggle button.active {
   color: #fff;
   background: #2563eb;
+}
+
+/* ---------- Small screens ---------- */
+
+@media (max-width: 640px) {
+  .home-inner {
+    padding: 22px 16px calc(22px + env(safe-area-inset-bottom));
+  }
+
+  .home-inner h1 { font-size: 30px; }
+  .tagline { margin-bottom: 18px; }
+  .mode-grid { grid-template-columns: 1fr; gap: 12px; }
+  .mode-card { padding: 16px; }
+  .settings { margin-top: 18px; }
+
+  /* Free draw: dock the panel to the bottom as a scrollable sheet so the map
+     fills the screen above it (one-handed, thumb reachable). */
+  #free-draw .panel {
+    top: auto;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    width: auto;
+    max-height: 56vh;
+    padding: 14px 16px calc(14px + env(safe-area-inset-bottom));
+    border-radius: 18px 18px 0 0;
+    box-shadow: 0 -8px 26px rgba(0, 0, 0, 0.28);
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  #free-draw .panel h1 { font-size: 15px; }
+  #free-draw .hint { display: none; }
+  /* Results push the sheet instead of overlapping and getting clipped. */
+  #free-draw .search-results { position: static; margin-top: 4px; max-height: 38vh; }
+
+  /* Drive HUD stays top-left but compact; clear of the notch. */
+  .drive-hud {
+    top: calc(12px + env(safe-area-inset-top));
+    left: calc(12px + env(safe-area-inset-left));
+    width: 168px;
+    padding: 12px;
+    border-radius: 12px;
+  }
+
+  .drive-hud .stat { font-size: 22px; }
+  .drive-hud button.back { margin-bottom: 8px; }
+
+  /* Touch controls clear of the home indicator and side edges. */
+  .drive-controls {
+    padding:
+      12px
+      calc(12px + env(safe-area-inset-right))
+      calc(14px + env(safe-area-inset-bottom))
+      calc(12px + env(safe-area-inset-left));
+  }
+
+  .ctrl { width: 60px; height: 60px; font-size: 18px; }
+  .pad { gap: 10px; }
+
+  .drive-overlay {
+    padding: calc(24px + env(safe-area-inset-top)) 20px calc(24px + env(safe-area-inset-bottom));
+  }
+
+  .end-card { padding: 22px 20px; }
+}
+
+/* Short screens (landscape phones) */
+@media (max-height: 480px) {
+  .home-inner { padding-top: 16px; padding-bottom: 16px; }
+  .home-inner h1 { font-size: 26px; }
+  .tagline { margin-bottom: 12px; }
+  .mode-grid { grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; }
+  .mode-card { padding: 14px; }
+  #free-draw .panel { max-height: 68vh; }
+  #free-draw .hint { display: none; }
 }

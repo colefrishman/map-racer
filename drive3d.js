@@ -908,11 +908,23 @@ function initDrive3D() {
   }
 
   // ----- buildings -----
-  const color = new THREE.Color();
-  function colorFor(height) {
-    const lightness = 0.62 + Math.min(0.22, height / 260);
-    color.setHSL(0.09, 0.1, lightness);
-    return color;
+  const BUILDING_PALETTE = [
+    0xd9cfc2, 0xcdbfae, 0xb9a892, 0xc9c6c0, 0xb2aca4, 0x9a928a, 0xb98a6a, 0xa5674f,
+    0xd8d4c9, 0x9aa3a8, 0xc2b6a3, 0x8c8a86,
+  ];
+  const HEX_RE = /^#([0-9a-f]{3}|[0-9a-f]{4}|[0-9a-f]{6}|[0-9a-f]{8})$/i;
+
+  function hash01(a, b) {
+    const s = Math.sin(a * 127.1 + b * 311.7) * 43758.5453;
+    return s - Math.floor(s);
+  }
+
+  // OSM `colour` tag when present, otherwise a stable palette pick per building.
+  function buildingColor(props, a, b) {
+    const tag = typeof props.colour === "string" ? props.colour.trim() : "";
+    if (HEX_RE.test(tag)) return new THREE.Color(tag);
+    const i = Math.floor(hash01(a, b) * BUILDING_PALETTE.length) % BUILDING_PALETTE.length;
+    return new THREE.Color(BUILDING_PALETTE[i]);
   }
 
   function addBuilding(feature, x, y, z, out, footprints) {
@@ -989,13 +1001,43 @@ function initDrive3D() {
       geometry.rotateX(-Math.PI / 2);
       geometry.translate(0, minHeight + baseY - FOUNDATION, 0);
 
-      const c = colorFor(height);
+      // Facade color per building; roofs and the base of the walls read darker,
+      // and walls get a subtle base-to-top gradient so blocks don't look flat.
+      const c = buildingColor(props, worldRing[0].x, worldRing[0].z);
+      const roofR = c.r * 0.72;
+      const roofG = c.g * 0.72;
+      const roofB = c.b * 0.72;
+      const baseR = c.r * 0.8;
+      const baseG = c.g * 0.8;
+      const baseB = c.b * 0.8;
+      const pa = geometry.attributes.position.array;
+      const na = geometry.attributes.normal ? geometry.attributes.normal.array : null;
       const count = geometry.attributes.position.count;
       const colors = new Float32Array(count * 3);
+      const yBase = baseY + minHeight;
+      const span = Math.max(1, height);
       for (let i = 0; i < count; i++) {
-        colors[i * 3] = c.r;
-        colors[i * 3 + 1] = c.g;
-        colors[i * 3 + 2] = c.b;
+        let r;
+        let g;
+        let b;
+        const ny = na ? na[i * 3 + 1] : 0;
+        if (ny > 0.5) {
+          r = roofR;
+          g = roofG;
+          b = roofB;
+        } else if (ny < -0.5) {
+          r = baseR;
+          g = baseG;
+          b = baseB;
+        } else {
+          const t = clamp((pa[i * 3 + 1] - yBase) / span, 0, 1);
+          r = baseR + (c.r - baseR) * t;
+          g = baseG + (c.g - baseG) * t;
+          b = baseB + (c.b - baseB) * t;
+        }
+        colors[i * 3] = r;
+        colors[i * 3 + 1] = g;
+        colors[i * 3 + 2] = b;
       }
       geometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
       out.push(geometry);
