@@ -36,6 +36,9 @@ const CAR = {
   radius: 1.4,
 };
 
+const CHASE_DIST = 7;
+const CHASE_HEIGHT = 3;
+
 const WATER_MARGIN = 6;
 const LINE_HALF = 10;
 const LINE_DEPTH = 4;
@@ -195,6 +198,31 @@ function initDrive3D() {
   const markerGroup = new THREE.Group();
   scene.add(chunkGroup, routeGroup, markerGroup);
 
+  // Low-poly car, shown only in third-person view. Built facing -Z, matching
+  // the heading convention (rotation.y = -heading).
+  const carGroup = new THREE.Group();
+  carGroup.visible = false;
+  {
+    const bodyMat = new THREE.MeshLambertMaterial({ color: 0xdc2626 });
+    const cabinMat = new THREE.MeshLambertMaterial({ color: 0x1e293b });
+    const wheelMat = new THREE.MeshLambertMaterial({ color: 0x111827 });
+    const body = new THREE.Mesh(new THREE.BoxGeometry(1.8, 0.55, 4.0), bodyMat);
+    body.position.y = 0.6;
+    const cabin = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.5, 2.0), cabinMat);
+    cabin.position.set(0, 1.05, -0.25);
+    carGroup.add(body, cabin);
+    const wheelGeo = new THREE.CylinderGeometry(0.34, 0.34, 0.3, 12);
+    for (const wx of [-0.92, 0.92]) {
+      for (const wz of [-1.28, 1.28]) {
+        const wheel = new THREE.Mesh(wheelGeo, wheelMat);
+        wheel.rotation.z = Math.PI / 2;
+        wheel.position.set(wx, 0.34, wz);
+        carGroup.add(wheel);
+      }
+    }
+  }
+  scene.add(carGroup);
+
   const baseMaterial = new THREE.MeshBasicMaterial({ color: 0xe6e4dc, side: THREE.DoubleSide });
   const flatMaterial = new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide });
   const buildingMaterial = new THREE.MeshLambertMaterial({ vertexColors: true });
@@ -224,6 +252,7 @@ function initDrive3D() {
     free: false,
     spawn: null,
     freeRef: null,
+    third: false,
   };
 
   function toWorld(lon, lat) {
@@ -1356,6 +1385,24 @@ function initDrive3D() {
     const fx = Math.sin(h);
     const fz = -Math.cos(h);
     const gy = terrainY(w.x, w.z);
+
+    carGroup.visible = state.third;
+
+    if (state.third) {
+      // Roads/route sit lifted above the bare terrain, so seat the car on the
+      // surface it drives on rather than on the ground (else it clips through).
+      const lift = state.free ? ROAD_Y : ROUTE_Y;
+      const base = gy + lift;
+      carGroup.position.set(w.x, base, w.z);
+      carGroup.rotation.y = -h;
+      const camX = w.x - fx * CHASE_DIST;
+      const camZ = w.z - fz * CHASE_DIST;
+      const camY = Math.max(base + CHASE_HEIGHT, terrainY(camX, camZ) + 0.6);
+      camera.position.set(camX, camY, camZ);
+      camera.lookAt(w.x + fx * 5, base + 1.4, w.z + fz * 5);
+      return;
+    }
+
     camera.position.set(w.x, gy + EYE_HEIGHT, w.z);
     camera.lookAt(w.x + fx * 60, gy + EYE_HEIGHT - 3, w.z + fz * 60);
   }
@@ -1541,6 +1588,16 @@ function initDrive3D() {
       e.preventDefault();
     }
   });
+
+  const viewBtn = document.getElementById("d3-view");
+  function updateViewButton() {
+    viewBtn.textContent = state.third ? "First person" : "Third person";
+  }
+  viewBtn.addEventListener("click", () => {
+    state.third = !state.third;
+    updateViewButton();
+  });
+  updateViewButton();
 
   document.getElementById("d3-restart").addEventListener("click", () => {
     if (state.track || state.free) resetCar();
