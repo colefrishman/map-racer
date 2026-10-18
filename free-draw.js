@@ -230,12 +230,6 @@ function initFreeDraw() {
     return [...new Set(parts)].join(", ") || "Unnamed place";
   }
 
-  function addStartPoint(lng, lat) {
-    if (!current) newRoute();
-    current.points.push([lng, lat]);
-    traceActiveRoute();
-  }
-
   function showResults(features) {
     if (!features.length) {
       showMessage("No matches.");
@@ -251,7 +245,7 @@ function initFreeDraw() {
         hideResults();
         searchInput.value = "";
         map.flyTo({ center: [lng, lat], zoom: 16, duration: 1200 });
-        addStartPoint(lng, lat);
+        setStatus("Jumped to location - click a road to add a point.");
       });
       resultsEl.appendChild(btn);
     }

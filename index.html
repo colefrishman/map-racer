@@ -194,6 +194,13 @@
   <section id="drive3d" class="screen hidden">
     <canvas id="drive3d-canvas"></canvas>
 
+    <div id="d3-loading" class="drive-overlay loading">
+      <div class="loading-card">
+        <div class="spinner" aria-hidden="true"></div>
+        <p>Loading terrain&hellip;</p>
+      </div>
+    </div>
+
     <div class="drive-hud">
       <button class="back" type="button" data-screen="home">&larr; Back</button>
 
@@ -210,6 +217,12 @@
       </div>
       <div class="stat small">
         <span id="d3-progress">0%</span> of route
+      </div>
+
+      <div id="d3-scheme" class="units-toggle compact" role="group" aria-label="Control scheme">
+        <button type="button" data-scheme="buttons">Pad</button>
+        <button type="button" data-scheme="tilt">Tilt</button>
+        <button type="button" data-scheme="hand">1-hand</button>
       </div>
 
       <button id="d3-view" class="cta ghost" type="button">Third person</button>
@@ -243,6 +256,9 @@
       <div class="pad">
         <button id="d3-brake" class="ctrl" type="button" aria-label="Brake / reverse">&#9660;</button>
         <button id="d3-accel" class="ctrl" type="button" aria-label="Accelerate">&#9650;</button>
+      </div>
+      <div id="d3-stick" class="stick">
+        <div id="d3-stick-knob" class="stick-knob"></div>
       </div>
     </div>
   </section>
