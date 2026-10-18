@@ -3,6 +3,10 @@ const TILEJSON_URL = "https://tiles.openfreemap.org/planet";
 
 const VECTOR_Z = 14;
 const CHUNK_RADIUS = 1;
+// Streaming budget: fetch a few tiles at a time and build at most one chunk per
+// frame so a burst of resolving tiles can't stall the UI thread.
+const CONCURRENT_LOADS = 6;
+const UNLOAD_GRACE = 1200;
 const M_PER_DEG_LAT = 111320;
 const EYE_HEIGHT = 1.7;
 const ROAD_WIDTH = 9;
@@ -63,6 +67,7 @@ const tileBufferCache = new Map();
 function fetchTileBuffer(template, z, x, y) {
   const url = template.replace("{z}", z).replace("{x}", x).replace("{y}", y);
   if (!tileBufferCache.has(url)) {
+    window.__tileFetches = window.__tileFetches || [];
     const promise = fetch(url)
       .then((r) => (r.ok ? r.arrayBuffer() : null))
       .then((b) => (b ? new Uint8Array(b) : null))
@@ -137,15 +142,27 @@ function demValue(dem, u, v) {
   return (a * (1 - fx) + b * fx) * (1 - fy) + (c * (1 - fx) + d * fx) * fy;
 }
 
+// Draping samples this tens of thousands of times per chunk, so cache the last
+// tile lookup to avoid building a Map key string on every vertex.
+let demCacheX = -1;
+let demCacheY = -1;
+let demCache = null;
+let demCacheValid = false;
+
 function sampleDem(lon, lat) {
   const z = TERRAIN_Z;
   const tx = lonToTileX(lon, z);
   const ty = latToTileY(lat, z);
   const xi = Math.floor(tx);
   const yi = Math.floor(ty);
-  const dem = demTiles.get(`${z}/${xi}/${yi}`);
-  if (!dem) return 0;
-  return demValue(dem, (tx - xi) * dem.w - 0.5, (ty - yi) * dem.h - 0.5);
+  if (!demCacheValid || xi !== demCacheX || yi !== demCacheY) {
+    demCache = demTiles.get(`${z}/${xi}/${yi}`) || null;
+    demCacheX = xi;
+    demCacheY = yi;
+    demCacheValid = true;
+  }
+  if (!demCache) return 0;
+  return demValue(demCache, (tx - xi) * demCache.w - 0.5, (ty - yi) * demCache.h - 0.5);
 }
 
 let tileTemplatePromise = null;
@@ -172,6 +189,7 @@ function initDrive3D() {
     end: document.getElementById("d3-end"),
     endDistance: document.getElementById("d3-end-distance"),
     endTime: document.getElementById("d3-end-time"),
+    loading: document.getElementById("d3-loading"),
     controls: document.querySelector("#drive3d .drive-controls"),
   };
 
@@ -205,6 +223,7 @@ function initDrive3D() {
   carGroup.visible = false;
   scene.add(carGroup);
 
+  let carLength = 4.5;
   function refreshCar() {
     while (carGroup.children.length) {
       const child = carGroup.children.pop();
@@ -212,6 +231,10 @@ function initDrive3D() {
       if (child.material) child.material.dispose();
     }
     carGroup.add(...buildCarMesh(carSettings.style, carSettings.color).children);
+    carGroup.updateMatrixWorld(true);
+    const size = new THREE.Vector3();
+    new THREE.Box3().setFromObject(carGroup).getSize(size);
+    carLength = size.z || 4.5;
   }
   refreshCar();
   onCarChange(refreshCar);
@@ -229,6 +252,8 @@ function initDrive3D() {
     total: 0,
     car: { lon: 0, lat: 0, heading: 0, speed: 0 },
     input: { left: false, right: false, accel: false, brake: false },
+    axis: { steer: 0, throttle: 0 },
+    scheme: "buttons",
     offRoad: false,
     progress: 0,
     done: false,
@@ -238,10 +263,16 @@ function initDrive3D() {
     finishLine: null,
     lastTime: 0,
     chunks: new Map(),
+    wanted: new Set(),
+    pendingLoads: [],
+    buildQueue: [],
+    inflight: 0,
     chunkCenter: null,
     nextTileCheck: 0,
     blocked: false,
     waterUntil: 0,
+    ready: false,
+    readySince: 0,
     free: false,
     spawn: null,
     freeRef: null,
@@ -804,7 +835,6 @@ function initDrive3D() {
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
     geometry.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
-    geometry.computeVertexNormals();
     group.add(new THREE.Mesh(geometry, flatMaterial));
   }
 
@@ -833,26 +863,13 @@ function initDrive3D() {
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
     geometry.setIndex(indices);
-    geometry.computeVertexNormals();
     group.add(new THREE.Mesh(geometry, baseMaterial));
   }
 
-  async function loadChunk(z, x, y) {
-    const key = `${z}/${x}/${y}`;
-    const chunk = state.chunks.get(key);
-    if (!chunk || chunk.loading || chunk.group) return;
-    chunk.loading = true;
-
-    let template;
-    try {
-      template = await getTileTemplate();
-    } catch {
-      chunk.loading = false;
-      return;
-    }
-    const [buffer] = await Promise.all([fetchTileBuffer(template, z, x, y), loadDem(z, x, y)]);
-    if (state.chunks.get(key) !== chunk) return;
-
+  // The CPU-heavy half of a chunk (tile decode, triangulation, draping, building
+  // extrude + merge). Split out so it can be drained by the per-frame scheduler.
+  function buildChunkGeometry(chunk, x, y, buffer) {
+    const z = VECTOR_Z;
     const group = new THREE.Group();
     let footprints = [];
     let waters = [];
@@ -876,16 +893,78 @@ function initDrive3D() {
         footprints = addBuildingsFromTile(vt, x, y, z, group);
       }
     }
-
-    if (state.chunks.get(key) !== chunk) {
-      disposeGroup(group);
-      return;
-    }
-    chunk.loading = false;
     chunk.group = group;
     chunk.footprints = footprints;
     chunk.water = waters;
     chunkGroup.add(group);
+  }
+
+  // Fetch + DEM decode are async and never touch the scene; the decoded buffer
+  // is handed to the build queue rather than built inline.
+  async function startChunkLoad(z, x, y, chunk, key) {
+    try {
+      const template = await getTileTemplate();
+      const [buffer] = await Promise.all([fetchTileBuffer(template, z, x, y), loadDem(z, x, y)]);
+      if (state.chunks.get(key) === chunk) {
+        chunk.buffer = buffer;
+        state.buildQueue.push({ key, chunk, x, y, buffer });
+      }
+    } catch {
+      /* leave the placeholder queued for a later tile-edge pass */
+    } finally {
+      chunk.loading = false;
+      state.inflight--;
+    }
+  }
+
+  function pumpLoads() {
+    if (!state.pendingLoads.length) return;
+    const [cx, cy] = state.chunkCenter || [0, 0];
+    while (state.inflight < CONCURRENT_LOADS && state.pendingLoads.length) {
+      let bi = 0;
+      let bd = Infinity;
+      for (let i = 0; i < state.pendingLoads.length; i++) {
+        const it = state.pendingLoads[i];
+        const d = (it.x - cx) ** 2 + (it.y - cy) ** 2;
+        if (d < bd) {
+          bd = d;
+          bi = i;
+        }
+      }
+      const item = state.pendingLoads.splice(bi, 1)[0];
+      const key = `${VECTOR_Z}/${item.x}/${item.y}`;
+      const chunk = state.chunks.get(key);
+      if (!chunk || chunk.loading || chunk.group || chunk.buffer !== undefined) continue;
+      chunk.loading = true;
+      state.inflight++;
+      startChunkLoad(VECTOR_Z, item.x, item.y, chunk, key);
+    }
+  }
+
+  // Build at most one chunk per frame, nearest to the car first, so a burst of
+  // tiles that resolve together spreads across frames instead of one long stall.
+  function pumpBuild() {
+    if (!state.buildQueue.length || screenEl.classList.contains("hidden")) return;
+    const [cx, cy] = state.chunkCenter || [0, 0];
+    let bi = -1;
+    let bd = Infinity;
+    for (let i = 0; i < state.buildQueue.length; i++) {
+      const it = state.buildQueue[i];
+      if (state.chunks.get(it.key) !== it.chunk || !state.wanted.has(it.key)) {
+        state.buildQueue.splice(i, 1);
+        i--;
+        continue;
+      }
+      const d = (it.x - cx) ** 2 + (it.y - cy) ** 2;
+      if (d < bd) {
+        bd = d;
+        bi = i;
+      }
+    }
+    if (bi < 0) return;
+    const item = state.buildQueue.splice(bi, 1)[0];
+    buildChunkGeometry(item.chunk, item.x, item.y, item.buffer);
+    item.chunk.buffer = null;
   }
 
   function unloadChunk(key, chunk) {
@@ -894,7 +973,29 @@ function initDrive3D() {
       disposeGroup(chunk.group);
       chunk.group = null;
     }
+    chunk.buffer = null;
     state.chunks.delete(key);
+  }
+
+  // Keep unwanted chunks around briefly (and drop at most one per frame) so
+  // driving back and forth across a tile edge doesn't thrash load/dispose.
+  function sweepChunks(now) {
+    let dropped = false;
+    for (const [key, chunk] of [...state.chunks]) {
+      if (state.wanted.has(key)) {
+        chunk.dropAt = 0;
+        continue;
+      }
+      if (!chunk.group) {
+        if (!chunk.loading) state.chunks.delete(key);
+        continue;
+      }
+      if (!chunk.dropAt) chunk.dropAt = now + UNLOAD_GRACE;
+      else if (now > chunk.dropAt && !dropped) {
+        unloadChunk(key, chunk);
+        dropped = true;
+      }
+    }
   }
 
   function updateChunks(cx, cy) {
@@ -912,23 +1013,22 @@ function initDrive3D() {
         wanted.add(key);
         if (!state.chunks.has(key)) {
           state.chunks.set(key, { loading: false, group: null });
-          pending.push({ x, y, distance: i * i + j * j });
+          pending.push({ x, y });
         }
       }
     }
-
-    for (const [key, chunk] of [...state.chunks]) {
-      if (!wanted.has(key)) unloadChunk(key, chunk);
-    }
-
-    pending.sort((a, b) => a.distance - b.distance);
-    for (const item of pending) loadChunk(z, item.x, item.y);
+    state.wanted = wanted;
+    state.pendingLoads = pending;
   }
 
   function clearChunks() {
     for (const [key, chunk] of [...state.chunks]) unloadChunk(key, chunk);
     state.chunks.clear();
     state.chunkCenter = null;
+    state.wanted = new Set();
+    state.pendingLoads = [];
+    state.buildQueue = [];
+    state.inflight = 0;
     state.blocked = false;
   }
 
@@ -1131,7 +1231,6 @@ function initDrive3D() {
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
     geometry.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
-    geometry.computeVertexNormals();
     group.add(new THREE.Mesh(geometry, flatMaterial));
   }
 
@@ -1177,7 +1276,6 @@ function initDrive3D() {
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
     geometry.setIndex(indices);
-    geometry.computeVertexNormals();
 
     disposeGroup(routeGroup);
     routeGroup.add(new THREE.Mesh(geometry, routeMaterial));
@@ -1273,8 +1371,13 @@ function initDrive3D() {
     const car = state.car;
     const input = state.input;
 
-    if (input.accel) car.speed += CAR.accel * dt;
-    else if (input.brake) car.speed -= CAR.brake * dt;
+    const throttle = clamp(
+      state.axis.throttle + (input.accel ? 1 : 0) - (input.brake ? 1 : 0),
+      -1,
+      1
+    );
+    if (throttle > 0) car.speed += CAR.accel * throttle * dt;
+    else if (throttle < 0) car.speed += CAR.brake * throttle * dt;
     else {
       const d = CAR.coast * dt;
       car.speed = Math.abs(car.speed) <= d ? 0 : car.speed - Math.sign(car.speed) * d;
@@ -1285,7 +1388,11 @@ function initDrive3D() {
     const prevLon = car.lon;
     const prevLat = car.lat;
 
-    const steer = (input.right ? 1 : 0) - (input.left ? 1 : 0);
+    const steer = clamp(
+      state.axis.steer + (input.right ? 1 : 0) - (input.left ? 1 : 0),
+      -1,
+      1
+    );
     const absSpeed = Math.abs(car.speed);
     if (steer && absSpeed > 0.4) {
       const factor = Math.min(1, absSpeed / 8) * (1 - Math.min(0.4, absSpeed / 130));
@@ -1388,11 +1495,13 @@ function initDrive3D() {
       const base = gy + lift;
       carGroup.position.set(w.x, base, w.z);
       carGroup.rotation.y = -h;
-      const camX = w.x - fx * CHASE_DIST;
-      const camZ = w.z - fz * CHASE_DIST;
-      const camY = Math.max(base + CHASE_HEIGHT, terrainY(camX, camZ) + 0.6);
+      // Longer vehicles (semi) need the camera pulled back further.
+      const scale = clamp(carLength / 4.5, 0.7, 2.8);
+      const camX = w.x - fx * CHASE_DIST * scale;
+      const camZ = w.z - fz * CHASE_DIST * scale;
+      const camY = Math.max(base + CHASE_HEIGHT * scale, terrainY(camX, camZ) + 0.6);
       camera.position.set(camX, camY, camZ);
-      camera.lookAt(w.x + fx * 5, base + 1.4, w.z + fz * 5);
+      camera.lookAt(w.x + fx * 5 * scale, base + 1.4, w.z + fz * 5 * scale);
       return;
     }
 
@@ -1425,7 +1534,20 @@ function initDrive3D() {
 
     if (screenEl.classList.contains("hidden") || (!state.track && !state.free)) return;
 
-    update(dt);
+    if (!state.ready) {
+      if (!state.readySince) state.readySince = time;
+      let built = 0;
+      for (const key of state.wanted) {
+        const chunk = state.chunks.get(key);
+        if (chunk && chunk.group) built++;
+      }
+      if ((state.wanted.size && built >= state.wanted.size) || time - state.readySince > 8000) {
+        state.ready = true;
+        el.loading.classList.add("hidden");
+      }
+    }
+
+    update(state.ready ? dt : 0);
     updateCamera();
     updateHud();
 
@@ -1437,6 +1559,10 @@ function initDrive3D() {
       updateChunks(cx, cy);
     }
 
+    pumpLoads();
+    pumpBuild();
+    sweepChunks(time);
+
     renderer.render(scene, camera);
   }
 
@@ -1446,6 +1572,15 @@ function initDrive3D() {
     renderer.setSize(w, h, false);
     camera.aspect = w / h;
     camera.updateProjectionMatrix();
+  }
+
+  // Hold driving until the chunks around the spawn point are built so the
+  // player never drops into an empty world. The timeout keeps a bad tile from
+  // blocking the game forever.
+  function beginLoad() {
+    state.ready = false;
+    state.readySince = 0;
+    el.loading.classList.remove("hidden");
   }
 
   // Free roam: no route, just a drop-in point. Chunks stream around the car.
@@ -1467,6 +1602,7 @@ function initDrive3D() {
     disposeGroup(markerGroup);
     clearChunks();
     state.nextTileCheck = 0;
+    beginLoad();
     resetCar();
   }
 
@@ -1496,6 +1632,7 @@ function initDrive3D() {
     state.finishLine = { P: toWorld(pN[0], pN[1]), dir: dirAt(pM, pN) };
     clearChunks();
     state.nextTileCheck = 0;
+    beginLoad();
     buildRoute();
     resetCar();
     drapeRoute();
@@ -1557,6 +1694,111 @@ function initDrive3D() {
   holdButton("d3-right", "right");
   holdButton("d3-accel", "accel");
   holdButton("d3-brake", "brake");
+
+  // ----- control schemes: on-screen pad, tilt steering, one-hand stick -----
+  const SCHEMES = ["buttons", "tilt", "hand"];
+  const schemeButtons = [...document.querySelectorAll("#d3-scheme button")];
+  const stick = document.getElementById("d3-stick");
+  const stickKnob = document.getElementById("d3-stick-knob");
+  let tiltAttached = false;
+
+  function setScheme(scheme) {
+    if (!SCHEMES.includes(scheme)) scheme = "buttons";
+    state.scheme = scheme;
+    screenEl.classList.remove("scheme-buttons", "scheme-tilt", "scheme-hand");
+    screenEl.classList.add("scheme-" + scheme);
+    for (const button of schemeButtons) {
+      button.classList.toggle("active", button.dataset.scheme === scheme);
+    }
+    state.axis.steer = 0;
+    state.axis.throttle = 0;
+    stickKnob.style.transform = "";
+    try {
+      localStorage.setItem("racer.controls", scheme);
+    } catch {}
+  }
+
+  function attachTilt() {
+    if (tiltAttached) return;
+    tiltAttached = true;
+    window.addEventListener("deviceorientation", (e) => {
+      if (state.scheme !== "tilt" || screenEl.classList.contains("hidden")) return;
+      const gamma = e.gamma || 0;
+      const dead = 4;
+      state.axis.steer =
+        Math.abs(gamma) < dead ? 0 : clamp((gamma - Math.sign(gamma) * dead) / 22, -1, 1);
+    });
+  }
+
+  // iOS 13+ gates device orientation behind a user gesture.
+  function requestTilt() {
+    if (
+      typeof DeviceOrientationEvent !== "undefined" &&
+      typeof DeviceOrientationEvent.requestPermission === "function"
+    ) {
+      DeviceOrientationEvent.requestPermission()
+        .then((result) => {
+          if (result === "granted") attachTilt();
+        })
+        .catch(() => {});
+    } else {
+      attachTilt();
+    }
+  }
+
+  for (const button of schemeButtons) {
+    button.addEventListener("click", () => {
+      if (button.dataset.scheme === "tilt") requestTilt();
+      setScheme(button.dataset.scheme);
+    });
+  }
+
+  // One-hand thumbstick: up accelerates, down brakes/reverses, sides steer.
+  let stickPointer = null;
+  function moveStick(clientX, clientY) {
+    const rect = stick.getBoundingClientRect();
+    const radius = rect.width / 2;
+    let dx = (clientX - (rect.left + radius)) / radius;
+    let dy = (clientY - (rect.top + rect.height / 2)) / (rect.height / 2);
+    const len = Math.hypot(dx, dy);
+    if (len > 1) {
+      dx /= len;
+      dy /= len;
+    }
+    const dead = 0.14;
+    const axis = (v) => (Math.abs(v) < dead ? 0 : (v - Math.sign(v) * dead) / (1 - dead));
+    state.axis.steer = clamp(axis(dx), -1, 1);
+    state.axis.throttle = clamp(-axis(dy), -1, 1);
+    const travel = 0.4 * radius;
+    stickKnob.style.transform = `translate(${dx * travel}px, ${dy * travel}px)`;
+  }
+  stick.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    stickPointer = e.pointerId;
+    try {
+      stick.setPointerCapture(e.pointerId);
+    } catch {}
+    moveStick(e.clientX, e.clientY);
+  });
+  stick.addEventListener("pointermove", (e) => {
+    if (e.pointerId === stickPointer) moveStick(e.clientX, e.clientY);
+  });
+  const releaseStick = (e) => {
+    if (stickPointer != null && e.pointerId !== stickPointer) return;
+    stickPointer = null;
+    state.axis.steer = 0;
+    state.axis.throttle = 0;
+    stickKnob.style.transform = "";
+  };
+  stick.addEventListener("pointerup", releaseStick);
+  stick.addEventListener("pointercancel", releaseStick);
+
+  let savedScheme = "buttons";
+  try {
+    savedScheme = localStorage.getItem("racer.controls") || "buttons";
+  } catch {}
+  setScheme(savedScheme);
+  if (savedScheme === "tilt") attachTilt();
 
   const KEYS = {
     ArrowUp: "accel", w: "accel", W: "accel",
