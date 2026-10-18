@@ -199,29 +199,22 @@ function initDrive3D() {
   scene.add(chunkGroup, routeGroup, markerGroup);
 
   // Low-poly car, shown only in third-person view. Built facing -Z, matching
-  // the heading convention (rotation.y = -heading).
+  // the heading convention (rotation.y = -heading). Body/color come from the
+  // shared garage settings.
   const carGroup = new THREE.Group();
   carGroup.visible = false;
-  {
-    const bodyMat = new THREE.MeshLambertMaterial({ color: 0xdc2626 });
-    const cabinMat = new THREE.MeshLambertMaterial({ color: 0x1e293b });
-    const wheelMat = new THREE.MeshLambertMaterial({ color: 0x111827 });
-    const body = new THREE.Mesh(new THREE.BoxGeometry(1.8, 0.55, 4.0), bodyMat);
-    body.position.y = 0.6;
-    const cabin = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.5, 2.0), cabinMat);
-    cabin.position.set(0, 1.05, -0.25);
-    carGroup.add(body, cabin);
-    const wheelGeo = new THREE.CylinderGeometry(0.34, 0.34, 0.3, 12);
-    for (const wx of [-0.92, 0.92]) {
-      for (const wz of [-1.28, 1.28]) {
-        const wheel = new THREE.Mesh(wheelGeo, wheelMat);
-        wheel.rotation.z = Math.PI / 2;
-        wheel.position.set(wx, 0.34, wz);
-        carGroup.add(wheel);
-      }
-    }
-  }
   scene.add(carGroup);
+
+  function refreshCar() {
+    while (carGroup.children.length) {
+      const child = carGroup.children.pop();
+      if (child.geometry) child.geometry.dispose();
+      if (child.material) child.material.dispose();
+    }
+    carGroup.add(...buildCarMesh(carSettings.style, carSettings.color).children);
+  }
+  refreshCar();
+  onCarChange(refreshCar);
 
   const baseMaterial = new THREE.MeshBasicMaterial({ color: 0xe6e4dc, side: THREE.DoubleSide });
   const flatMaterial = new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide });

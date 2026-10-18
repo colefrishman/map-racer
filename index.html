@@ -57,6 +57,23 @@
           <button type="button" data-units="metric">Kilometers</button>
         </div>
       </div>
+
+      <div class="garage">
+        <div class="garage-head">Your car</div>
+        <div class="garage-body">
+          <canvas id="car-preview" class="car-preview"></canvas>
+          <div class="garage-controls">
+            <div class="field">
+              Body
+              <div class="pill-group" id="car-styles"></div>
+            </div>
+            <div class="field">
+              Color
+              <div class="swatches" id="car-colors"></div>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
   </section>
 
@@ -273,6 +290,7 @@
   <script src="free-draw.js"></script>
   <script src="drive.js"></script>
   <script src="free-drive.js"></script>
+  <script src="car.js"></script>
 
   <script type="module">
     import * as THREE from "three";
