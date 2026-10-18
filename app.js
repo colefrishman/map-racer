@@ -1,4 +1,4 @@
-const game = { track: null };
+const game = { track: null, freeRoam: null };
 window.game = game;
 
 const screens = new Map();

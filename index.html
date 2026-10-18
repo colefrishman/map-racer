@@ -39,6 +39,11 @@
           <span class="mode-desc">Cruise your route in first person with real 3D buildings.</span>
         </button>
 
+        <button class="mode-card" type="button" data-screen="free-drive">
+          <span class="mode-title">Free Drive</span>
+          <span class="mode-desc">Drop in anywhere and roam the streets in 3D — no route needed.</span>
+        </button>
+
         <div class="mode-card disabled">
           <span class="mode-title">More coming soon</span>
           <span class="mode-desc">New modes will show up here.</span>
@@ -224,11 +229,49 @@
     </div>
   </section>
 
+  <section id="free-drive" class="screen hidden">
+    <div class="panel">
+      <button class="back" type="button" data-screen="home">&larr; Back</button>
+      <h1>Free Drive</h1>
+      <p class="hint">
+        Pick where to drop in, then roam the streets in 3D. No route needed — just
+        drive.
+      </p>
+
+      <div class="field">
+        <span>Start location</span>
+        <div class="search">
+          <input
+            id="fd-search"
+            type="text"
+            placeholder="Search a place, address, city&hellip;"
+            autocomplete="off"
+            spellcheck="false"
+          />
+          <div id="fd-search-results" class="search-results hidden"></div>
+        </div>
+      </div>
+
+      <button id="fd-locate" class="cta ghost" type="button">Use my location</button>
+
+      <button id="fd-start" class="cta" type="button" disabled>
+        Start driving &rarr;
+      </button>
+
+      <p id="fd-status" class="status">Search for a start, or use your location.</p>
+      <small class="credit">
+        OpenFreeMap / OpenStreetMap tiles &middot; Photon search &middot; internet
+        required.
+      </small>
+    </div>
+  </section>
+
   <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
   <script src="units.js"></script>
   <script src="app.js"></script>
   <script src="free-draw.js"></script>
   <script src="drive.js"></script>
+  <script src="free-drive.js"></script>
 
   <script type="module">
     import * as THREE from "three";

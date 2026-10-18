@@ -221,6 +221,9 @@ function initDrive3D() {
     nextTileCheck: 0,
     blocked: false,
     waterUntil: 0,
+    free: false,
+    spawn: null,
+    freeRef: null,
   };
 
   function toWorld(lon, lat) {
@@ -1195,6 +1198,26 @@ function initDrive3D() {
 
   // ----- simulation -----
   function resetCar() {
+    state.car.speed = 0;
+    state.progress = 0;
+    state.done = false;
+    state.started = false;
+    state.offRoad = false;
+    state.startedAt = null;
+    state.blocked = false;
+    state.waterUntil = 0;
+    el.end.classList.add("hidden");
+    for (const key of Object.keys(state.input)) state.input[key] = false;
+
+    if (state.free) {
+      // Free roam: respawn at the chosen drop-in point.
+      const spawn = state.spawn;
+      state.car.lon = spawn.lon;
+      state.car.lat = spawn.lat;
+      state.car.heading = spawn.heading || 0;
+      return;
+    }
+
     const track = state.track;
     const o = state.origin;
     const line = state.startLine;
@@ -1207,16 +1230,6 @@ function initDrive3D() {
     state.car.lon = lon;
     state.car.lat = lat;
     state.car.heading = track.length > 1 ? bearing(track[0], track[1]) : 0;
-    state.car.speed = 0;
-    state.progress = 0;
-    state.done = false;
-    state.started = false;
-    state.offRoad = false;
-    state.startedAt = null;
-    state.blocked = false;
-    state.waterUntil = 0;
-    el.end.classList.add("hidden");
-    for (const key of Object.keys(state.input)) state.input[key] = false;
   }
 
   // True when the movement from -> to crosses the race line (forward only,
@@ -1258,10 +1271,14 @@ function initDrive3D() {
         (car.heading + steer * CAR.steer * factor * dt * Math.sign(car.speed) + 360) % 360;
     }
 
-    state.offRoad = nearest(car.lon, car.lat).dist > CAR.roadWidth;
-    if (state.offRoad) {
-      const d = CAR.offRoad * dt;
-      car.speed = Math.abs(car.speed) <= d ? 0 : car.speed - Math.sign(car.speed) * d;
+    if (state.free) {
+      state.offRoad = false;
+    } else {
+      state.offRoad = nearest(car.lon, car.lat).dist > CAR.roadWidth;
+      if (state.offRoad) {
+        const d = CAR.offRoad * dt;
+        car.speed = Math.abs(car.speed) <= d ? 0 : car.speed - Math.sign(car.speed) * d;
+      }
     }
 
     const h = (car.heading * Math.PI) / 180;
@@ -1285,7 +1302,8 @@ function initDrive3D() {
         const s = clamp(remaining, -maxStep, maxStep);
         const nlat = car.lat + (cosH * s) / M_PER_DEG_LAT;
         const nlon = car.lon + (sinH * s) / (M_PER_DEG_LAT * Math.cos((nlat * Math.PI) / 180));
-        if (blockedAt(nlon, nlat)) {
+        // In free roam the water is a hard edge (no route to snap back to).
+        if (blockedAt(nlon, nlat) || (state.free && inWater(nlon, nlat))) {
           hit = true;
           break;
         }
@@ -1296,6 +1314,8 @@ function initDrive3D() {
       if (hit) car.speed = 0;
       state.blocked = blockedAt(car.lon, car.lat);
     }
+
+    if (state.free) return;
 
     let at = nearest(car.lon, car.lat);
 
@@ -1363,7 +1383,7 @@ function initDrive3D() {
     const dt = Math.min(0.05, (time - state.lastTime) / 1000 || 0);
     state.lastTime = time;
 
-    if (screenEl.classList.contains("hidden") || !state.track) return;
+    if (screenEl.classList.contains("hidden") || (!state.track && !state.free)) return;
 
     update(dt);
     updateCamera();
@@ -1388,7 +1408,30 @@ function initDrive3D() {
     camera.updateProjectionMatrix();
   }
 
+  // Free roam: no route, just a drop-in point. Chunks stream around the car.
+  function loadFree(spawn) {
+    state.free = true;
+    state.track = null;
+    state.loadedRef = null;
+    state.cum = [];
+    state.total = 0;
+    state.startLine = null;
+    state.finishLine = null;
+    state.spawn = spawn;
+    state.origin = {
+      lon: spawn.lon,
+      lat: spawn.lat,
+      cosLat: Math.cos((spawn.lat * Math.PI) / 180),
+    };
+    disposeGroup(routeGroup);
+    disposeGroup(markerGroup);
+    clearChunks();
+    state.nextTileCheck = 0;
+    resetCar();
+  }
+
   function loadTrack() {
+    state.free = false;
     const path = game.track;
     state.track = path;
     state.cum = [0];
@@ -1419,10 +1462,25 @@ function initDrive3D() {
   }
 
   function syncTrack() {
+    const free = !!game.freeRoam;
     const hasTrack = !!game.track && game.track.length >= 2;
-    el.empty.classList.toggle("hidden", hasTrack);
-    el.controls.classList.toggle("hidden", !hasTrack);
+    screenEl.classList.toggle("free", free);
+    el.empty.classList.toggle("hidden", hasTrack || free);
+    el.controls.classList.toggle("hidden", !(hasTrack || free));
+
+    if (free) {
+      if (game.freeRoam !== state.freeRef) {
+        state.freeRef = game.freeRoam;
+        state.loadedRef = null;
+        loadFree(game.freeRoam);
+      }
+      resize();
+      return;
+    }
+
+    state.freeRef = null;
     if (!hasTrack) {
+      state.free = false;
       state.track = null;
       return;
     }
@@ -1485,10 +1543,10 @@ function initDrive3D() {
   });
 
   document.getElementById("d3-restart").addEventListener("click", () => {
-    if (state.track) resetCar();
+    if (state.track || state.free) resetCar();
   });
   document.getElementById("d3-again").addEventListener("click", () => {
-    if (state.track) resetCar();
+    if (state.track || state.free) resetCar();
   });
 
   onUnitsChange(() => {

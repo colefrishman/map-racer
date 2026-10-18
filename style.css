@@ -320,6 +320,29 @@ button.back:hover { background: #eee; }
   background: #e2e8f0;
 }
 
+/* ---------- Free drive entry ---------- */
+
+#free-drive {
+  display: flex;
+  overflow-y: auto;
+  background: linear-gradient(160deg, #0f172a 0%, #1e3a8a 60%, #2563eb 100%);
+}
+
+#free-drive .panel {
+  position: static;
+  width: 340px;
+  max-width: calc(100% - 32px);
+  margin: auto;
+  padding-top: calc(18px + env(safe-area-inset-top));
+  padding-bottom: calc(18px + env(safe-area-inset-bottom));
+}
+
+/* Free roam has no route, so hide the progress UI. */
+#drive3d.free .bar,
+#drive3d.free .stat.small {
+  display: none;
+}
+
 /* ---------- Drive screen ---------- */
 
 #drive-map {

@@ -192,12 +192,14 @@ function initFreeDraw() {
   driveBtn.addEventListener("click", () => {
     if (current && current.line) {
       game.track = current.line.coordinates;
+      game.freeRoam = null;
       openScreen("drive");
     }
   });
   drive3dBtn.addEventListener("click", () => {
     if (current && current.line) {
       game.track = current.line.coordinates;
+      game.freeRoam = null;
       openScreen("drive3d");
     }
   });
