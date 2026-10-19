@@ -18,12 +18,21 @@ const DRAPE_STEP = 12;
 const DRAPE_MAXN = 40;
 const FOUNDATION = 6;
 
-// Layer heights above the terrain. These must exceed the small mismatch between
-// the base ground grid and the independently-draped overlays, otherwise layers
-// flicker through / sink into the ground. Flat overlays at this scale look flush.
-const WATER_Y = 0.05;
-const AREA_LAYER_BASE = { water: WATER_Y, landcover: 0.25, landuse: 0.4, park: 0.55 };
-const AREA_LAYER_BAND = { water: 0.01, landcover: 0.1, landuse: 0.1, park: 0.1 };
+// Ground overlays are drawn as separate painter's-order passes matching the
+// OpenFreeMap "liberty" style (bottom to top): park, built-up landuse,
+// landcover, landuse details, water, sand. Each pass sits above the terrain and
+// does not write depth, so a later pass cleanly paints over an earlier one.
+const WATER_Y = 0.5;
+const AREA_BASE = 0.3;
+const AREA_BAND_COUNT = 6;
+const RENDER_ORDER = {
+  areas: 10,
+  buildings: 20,
+  roads: 30,
+  route: 40,
+  markers: 50,
+  car: 60,
+};
 const ROAD_Y = 0.75;
 const ROUTE_Y = 0.9;
 const BASE_SINK = 0.15;
@@ -155,7 +164,9 @@ function sampleDem(lon, lat) {
   const ty = latToTileY(lat, z);
   const xi = Math.floor(tx);
   const yi = Math.floor(ty);
-  if (!demCacheValid || xi !== demCacheX || yi !== demCacheY) {
+  // Re-look-up while the tile is still null: an early sample (before the DEM
+  // arrived) must not pin the whole tile to height 0 for the rest of the run.
+  if (!demCacheValid || !demCache || xi !== demCacheX || yi !== demCacheY) {
     demCache = demTiles.get(`${z}/${xi}/${yi}`) || null;
     demCacheX = xi;
     demCacheY = yi;
@@ -231,6 +242,9 @@ function initDrive3D() {
       if (child.material) child.material.dispose();
     }
     carGroup.add(...buildCarMesh(carSettings.style, carSettings.color).children);
+    carGroup.traverse((o) => {
+      if (o.isMesh) o.renderOrder = RENDER_ORDER.car;
+    });
     carGroup.updateMatrixWorld(true);
     const size = new THREE.Vector3();
     new THREE.Box3().setFromObject(carGroup).getSize(size);
@@ -241,6 +255,13 @@ function initDrive3D() {
 
   const baseMaterial = new THREE.MeshBasicMaterial({ color: 0xe6e4dc, side: THREE.DoubleSide });
   const flatMaterial = new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide });
+  // Ground bands never write depth: each pass is painted over the previous one
+  // in style order, while still being occluded by terrain and buildings.
+  const areaMaterial = new THREE.MeshBasicMaterial({
+    vertexColors: true,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+  });
   const buildingMaterial = new THREE.MeshLambertMaterial({ vertexColors: true });
   const routeMaterial = new THREE.MeshBasicMaterial({ color: 0x2563eb, side: THREE.DoubleSide });
 
@@ -510,6 +531,45 @@ function initDrive3D() {
     return null;
   }
 
+  // Draw priority matching the liberty style's fill order (0 = bottom).
+  function groundAreaRank(layerName, p) {
+    const cls = p.class;
+    const sub = p.subclass;
+    if (layerName === "park") return 0;
+    if (layerName === "water") return 4;
+    if (layerName === "landcover") {
+      if (cls === "sand" || sub === "sand" || sub === "beach") return 5;
+      return 2;
+    }
+    if (layerName === "landuse") {
+      if (
+        cls === "pitch" ||
+        cls === "track" ||
+        cls === "playground" ||
+        cls === "cemetery" ||
+        cls === "grave_yard" ||
+        cls === "hospital" ||
+        cls === "school" ||
+        cls === "college" ||
+        cls === "university" ||
+        cls === "kindergarten" ||
+        cls === "theme_park" ||
+        cls === "garden" ||
+        cls === "park" ||
+        cls === "recreation_ground" ||
+        cls === "village_green" ||
+        cls === "military" ||
+        cls === "orchard" ||
+        cls === "vineyard" ||
+        cls === "grass" ||
+        cls === "meadow"
+      )
+        return 3;
+      return 1;
+    }
+    return 1;
+  }
+
   function roadStyle(p) {
     const cls = p.class;
     const sub = p.subclass;
@@ -682,34 +742,8 @@ function initDrive3D() {
     return [];
   }
 
-  function geoBBoxArea(geo) {
-    const geometry = geo.geometry;
-    if (!geometry) return 0;
-    const polys =
-      geometry.type === "Polygon"
-        ? [geometry.coordinates]
-        : geometry.type === "MultiPolygon"
-          ? geometry.coordinates
-          : null;
-    if (!polys) return 0;
-    let minX = Infinity;
-    let maxX = -Infinity;
-    let minZ = Infinity;
-    let maxZ = -Infinity;
-    for (const poly of polys) {
-      for (const [lon, latPt] of poly[0]) {
-        const w = toWorld(lon, latPt);
-        if (w.x < minX) minX = w.x;
-        if (w.x > maxX) maxX = w.x;
-        if (w.z < minZ) minZ = w.z;
-        if (w.z > maxZ) maxZ = w.z;
-      }
-    }
-    return (maxX - minX) * (maxZ - minZ);
-  }
-
-  // A water body is a flat sheet at the mean terrain height of its shoreline.
-  // The DEM already stores the water surface as its flat level, so this keeps
+  // A water body is a flat sheet at the terrain height of its interior. The DEM
+  // already stores the water surface as its flat level, so this keeps
   // lakes/rivers visible instead of hiding them under the draped land.
   function waterLevel(geo) {
     const geometry = geo.geometry;
@@ -720,16 +754,21 @@ function initDrive3D() {
         : geometry.type === "MultiPolygon"
           ? geometry.coordinates
           : [];
-    let sum = 0;
+    // Sample one interior point (the average of the ring) rather than the ring
+    // itself: a tile-clipped lake ring runs along the tile edge, where the DEM
+    // neighbours are often not loaded yet and would drag the level toward 0.
+    let sumX = 0;
+    let sumZ = 0;
     let n = 0;
     for (const poly of polys) {
       for (const [lon, latPt] of poly[0]) {
         const w = toWorld(lon, latPt);
-        sum += terrainY(w.x, w.z);
+        sumX += w.x;
+        sumZ += w.z;
         n++;
       }
     }
-    return n ? sum / n : 0;
+    return n ? terrainY(sumX / n, sumZ / n) : 0;
   }
 
   function collectWaterRings(geo, waters, level) {
@@ -759,39 +798,41 @@ function initDrive3D() {
     }
   }
 
-  function addGroundAreas(vt, x, y, z, positions, colors, waters) {
+  function addGroundAreas(vt, x, y, z, bands, waters) {
     for (const name of ["water", "landcover", "landuse", "park"]) {
       const layer = vt.layers[name];
       if (!layer) continue;
-
-      const items = [];
       for (let i = 0; i < layer.length; i++) {
         const feature = layer.feature(i);
-        const c = groundAreaColor(name, feature.properties);
-        if (!c) continue;
+        const color = groundAreaColor(name, feature.properties);
+        if (!color) continue;
         let geo;
         try {
           geo = feature.toGeoJSON(x, y, z);
         } catch {
           continue;
         }
-        const level = name === "water" ? waterLevel(geo) : 0;
-        items.push({ color: c, geo, area: geoBBoxArea(geo), level });
-        if (name === "water" && waters) collectWaterRings(geo, waters, level);
-      }
-
-      // Larger areas lower, smaller details (fields, paths) on top, so no two
-      // polygons in the same layer are coplanar (which causes z-fighting).
-      items.sort((a, b) => b.area - a.area);
-      const base = AREA_LAYER_BASE[name];
-      const band = AREA_LAYER_BAND[name];
-      const step = Math.min(0.0005, band / (items.length + 1));
-      for (let i = 0; i < items.length; i++) {
-        // Water is always a flat sheet at sea level, never draped on the terrain.
         const isWater = name === "water";
-        const h = isWater ? WATER_Y + items[i].level + i * step : base + i * step;
-        pushPolygon(items[i].geo.geometry, items[i].color, h, positions, colors, isWater);
+        const level = isWater ? waterLevel(geo) : 0;
+        if (isWater && waters) collectWaterRings(geo, waters, level);
+        const rank = groundAreaRank(name, feature.properties);
+        // Water is a flat sheet at its real surface; land drapes on the terrain.
+        const h = isWater ? WATER_Y + level : AREA_BASE;
+        bands[rank].push({ geometry: geo.geometry, color, h, flat: isWater });
       }
+    }
+  }
+
+  function buildAreaBands(bands, group) {
+    for (let rank = 0; rank < bands.length; rank++) {
+      const items = bands[rank];
+      if (!items.length) continue;
+      const positions = [];
+      const colors = [];
+      for (const item of items) {
+        pushPolygon(item.geometry, item.color, item.h, positions, colors, item.flat);
+      }
+      buildFlatMesh(positions, colors, group, areaMaterial, RENDER_ORDER.areas + rank);
     }
   }
 
@@ -830,12 +871,14 @@ function initDrive3D() {
     }
   }
 
-  function buildFlatMesh(positions, colors, group) {
+  function buildFlatMesh(positions, colors, group, material = flatMaterial, order = 0) {
     if (!positions.length) return;
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
     geometry.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
-    group.add(new THREE.Mesh(geometry, flatMaterial));
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.renderOrder = order;
+    group.add(mesh);
   }
 
   function addBaseQuad(group, x, y, z) {
@@ -881,15 +924,14 @@ function initDrive3D() {
         vt = null;
       }
       if (vt) {
-        const areaPositions = [];
-        const areaColors = [];
+        const bands = Array.from({ length: AREA_BAND_COUNT }, () => []);
         const roadPositions = [];
         const roadColors = [];
-        addGroundAreas(vt, x, y, z, areaPositions, areaColors, waters);
+        addGroundAreas(vt, x, y, z, bands, waters);
         addGroundRoads(vt, x, y, z, roadPositions, roadColors);
         addBaseQuad(group, x, y, z);
-        buildFlatMesh(areaPositions, areaColors, group);
-        buildFlatMesh(roadPositions, roadColors, group);
+        buildAreaBands(bands, group);
+        buildFlatMesh(roadPositions, roadColors, group, flatMaterial, RENDER_ORDER.roads);
         footprints = addBuildingsFromTile(vt, x, y, z, group);
       }
     }
@@ -1187,7 +1229,9 @@ function initDrive3D() {
     const merged = mergeGeometries(geometries);
     if (merged) {
       merged.computeBoundingSphere();
-      group.add(new THREE.Mesh(merged, buildingMaterial));
+      const mesh = new THREE.Mesh(merged, buildingMaterial);
+      mesh.renderOrder = RENDER_ORDER.buildings;
+      group.add(mesh);
     }
     return footprints;
   }
@@ -1231,7 +1275,9 @@ function initDrive3D() {
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
     geometry.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
-    group.add(new THREE.Mesh(geometry, flatMaterial));
+    const mesh = new THREE.Mesh(geometry, flatMaterial);
+    mesh.renderOrder = RENDER_ORDER.markers;
+    group.add(mesh);
   }
 
   function buildRoute() {
@@ -1278,7 +1324,9 @@ function initDrive3D() {
     geometry.setIndex(indices);
 
     disposeGroup(routeGroup);
-    routeGroup.add(new THREE.Mesh(geometry, routeMaterial));
+    const routeMesh = new THREE.Mesh(geometry, routeMaterial);
+    routeMesh.renderOrder = RENDER_ORDER.route;
+    routeGroup.add(routeMesh);
 
     disposeGroup(markerGroup);
     if (state.startLine) addStripe(markerGroup, state.startLine, 0xffffff, 0x16a34a);
