@@ -18,11 +18,14 @@ const DRAPE_STEP = 12;
 const DRAPE_MAXN = 40;
 const FOUNDATION = 6;
 
-// Ground overlays are drawn as separate painter's-order passes matching the
+// Everything on the ground is drawn as painter's-order passes matching the
 // OpenFreeMap "liberty" style (bottom to top): park, built-up landuse,
-// landcover, landuse details, water, sand. Each pass sits above the terrain and
-// does not write depth, so a later pass cleanly paints over an earlier one.
-const WATER_Y = 0.5;
+// landcover, landuse details, water, sand, then roads. None of them write
+// depth, so a later pass cleanly paints over an earlier one no matter how the
+// layers overlap in height (that ordering is what keeps a bridge over its
+// river). They only need to clear the depth-writing base terrain, hence the
+// small shared lift; height is otherwise cosmetic.
+const WATER_Y = 0.3;
 const AREA_BASE = 0.3;
 const AREA_BAND_COUNT = 6;
 const RENDER_ORDER = {
@@ -33,8 +36,8 @@ const RENDER_ORDER = {
   markers: 50,
   car: 60,
 };
-const ROAD_Y = 0.75;
-const ROUTE_Y = 0.9;
+const ROAD_Y = 0.3;
+const ROUTE_Y = 0.5;
 const BASE_SINK = 0.15;
 
 const CAR = {
@@ -56,7 +59,7 @@ const WATER_MARGIN = 6;
 const LINE_HALF = 10;
 const LINE_DEPTH = 4;
 const LINE_COLS = 10;
-const LINE_Y = 1.05;
+const LINE_Y = 0.6;
 const START_BACK = 8;
 
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
@@ -254,14 +257,15 @@ function initDrive3D() {
   onCarChange(refreshCar);
 
   const baseMaterial = new THREE.MeshBasicMaterial({ color: 0xe6e4dc, side: THREE.DoubleSide });
-  const flatMaterial = new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide });
-  // Ground bands never write depth: each pass is painted over the previous one
-  // in style order, while still being occluded by terrain and buildings.
-  const areaMaterial = new THREE.MeshBasicMaterial({
+  // Every ground layer (areas, water, roads, stripes) shares one non-depth-
+  // writing material: they paint strictly in RENDER_ORDER, so a bridge always
+  // draws over its river and a road never fights a park for the same pixels.
+  const flatMaterial = new THREE.MeshBasicMaterial({
     vertexColors: true,
     side: THREE.DoubleSide,
     depthWrite: false,
   });
+  const areaMaterial = flatMaterial;
   const buildingMaterial = new THREE.MeshLambertMaterial({ vertexColors: true });
   const routeMaterial = new THREE.MeshBasicMaterial({ color: 0x2563eb, side: THREE.DoubleSide });
 
@@ -836,7 +840,7 @@ function initDrive3D() {
     }
   }
 
-  function addGroundRoads(vt, x, y, z, positions, colors) {
+  function addGroundRoads(vt, x, y, z, positions, colors, waterPositions, waterColors) {
     const roads = vt.layers["transportation"];
     if (roads) {
       for (let i = 0; i < roads.length; i++) {
@@ -865,7 +869,17 @@ function initDrive3D() {
             n++;
           }
           const level = n ? sum / n : 0;
-          pushRibbon(line, width, WATER_Y + level, GROUND_COLORS.water, positions, colors, true);
+          // Rivers belong to the water pass, not the road pass: a bridge is a
+          // road and must paint over its river instead of racing it on height.
+          pushRibbon(
+            line,
+            width,
+            WATER_Y + level,
+            GROUND_COLORS.water,
+            waterPositions,
+            waterColors,
+            true
+          );
         }
       }
     }
@@ -927,10 +941,19 @@ function initDrive3D() {
         const bands = Array.from({ length: AREA_BAND_COUNT }, () => []);
         const roadPositions = [];
         const roadColors = [];
+        const waterwayPositions = [];
+        const waterwayColors = [];
         addGroundAreas(vt, x, y, z, bands, waters);
-        addGroundRoads(vt, x, y, z, roadPositions, roadColors);
+        addGroundRoads(vt, x, y, z, roadPositions, roadColors, waterwayPositions, waterwayColors);
         addBaseQuad(group, x, y, z);
         buildAreaBands(bands, group);
+        buildFlatMesh(
+          waterwayPositions,
+          waterwayColors,
+          group,
+          areaMaterial,
+          RENDER_ORDER.areas + 4
+        );
         buildFlatMesh(roadPositions, roadColors, group, flatMaterial, RENDER_ORDER.roads);
         footprints = addBuildingsFromTile(vt, x, y, z, group);
       }
