@@ -87,16 +87,38 @@ function buildCarMesh(style, color) {
     return mesh;
   }
 
+  const boltGeo = new THREE.BoxGeometry(0.035, 0.075, 0.075);
   function wheel(radius, x, z, width) {
     const w = width || 0.32;
+    // Steer pivot (yaw) wraps a spin pivot (axle) so drive3d can animate both.
+    const steer = new THREE.Group();
+    steer.position.set(x, radius, z);
+    steer.userData.wheel = { radius, front: z < 0, spin: 0 };
+    const spin = new THREE.Group();
+    steer.add(spin);
+
     const t = new THREE.Mesh(new THREE.CylinderGeometry(radius, radius, w, 16), tireMat);
     t.rotation.z = Math.PI / 2;
-    t.position.set(x, radius, z);
-    group.add(t);
+    spin.add(t);
     const hub = new THREE.Mesh(new THREE.CylinderGeometry(radius * 0.5, radius * 0.5, w + 0.03, 10), hubMat);
     hub.rotation.z = Math.PI / 2;
-    hub.position.set(x, radius, z);
-    group.add(hub);
+    spin.add(hub);
+
+    // Lug nuts make the spin readable; a smooth cylinder looks static.
+    const faces = x === 0 ? [-1, 1] : [Math.sign(x)];
+    for (const face of faces) {
+      for (let k = 0; k < 3; k++) {
+        const a = (k / 3) * Math.PI * 2;
+        const bolt = new THREE.Mesh(boltGeo, darkMat);
+        bolt.position.set(
+          face * (w / 2 + 0.02),
+          Math.cos(a) * radius * 0.32,
+          Math.sin(a) * radius * 0.32
+        );
+        spin.add(bolt);
+      }
+    }
+    group.add(steer);
   }
 
   function lights(z, y, halfW, mat, w, h) {

@@ -241,14 +241,18 @@ function initDrive3D() {
   scene.add(carGroup);
 
   let carLength = 4.5;
+  let carWheels = [];
   function refreshCar() {
-    while (carGroup.children.length) {
-      const child = carGroup.children.pop();
-      if (child.geometry) child.geometry.dispose();
-      if (child.material) child.material.dispose();
-    }
-    carGroup.add(...buildCarMesh(carSettings.style, carSettings.color).children);
     carGroup.traverse((o) => {
+      if (!o.isMesh) return;
+      if (o.geometry) o.geometry.dispose();
+      if (o.material) o.material.dispose();
+    });
+    while (carGroup.children.length) carGroup.remove(carGroup.children[0]);
+    carGroup.add(...buildCarMesh(carSettings.style, carSettings.color).children);
+    carWheels = [];
+    carGroup.traverse((o) => {
+      if (o.userData.wheel) carWheels.push(o);
       if (o.isMesh) o.renderOrder = RENDER_ORDER.car;
     });
     carGroup.updateMatrixWorld(true);
@@ -304,7 +308,7 @@ function initDrive3D() {
     free: false,
     spawn: null,
     freeRef: null,
-    third: false,
+    third: true,
     camHeading: null,
   };
 
@@ -1469,6 +1473,7 @@ function initDrive3D() {
       -1,
       1
     );
+    state.steer = steer;
     const absSpeed = Math.abs(car.speed);
     if (steer && absSpeed > 0.4) {
       const factor = Math.min(1, absSpeed / 8) * (1 - Math.min(0.4, absSpeed / 130));
@@ -1551,6 +1556,19 @@ function initDrive3D() {
         state.done = true;
         finishRoute();
       }
+    }
+  }
+
+  function updateWheels(dt) {
+    if (!carWheels.length) return;
+    const car = state.car;
+    const steer = state.steer || 0;
+    for (const pivot of carWheels) {
+      const wheel = pivot.userData.wheel;
+      wheel.spin += (car.speed / wheel.radius) * dt;
+      const spinner = pivot.children[0];
+      if (spinner) spinner.rotation.x = -wheel.spin;
+      pivot.rotation.y = wheel.front ? -steer * 0.5 : 0;
     }
   }
 
@@ -1640,6 +1658,7 @@ function initDrive3D() {
     }
 
     update(state.ready ? dt : 0);
+    updateWheels(state.ready ? dt : 0);
     updateCamera(state.ready ? dt : 0);
     updateHud();
 
