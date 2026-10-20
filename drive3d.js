@@ -54,6 +54,9 @@ const CAR = {
 
 const CHASE_DIST = 7;
 const CHASE_HEIGHT = 3;
+// Seconds for the chase camera's yaw to catch up to the car. A little lag lets
+// the body swing into view through a turn instead of the camera locking to it.
+const CAM_LAG = 0.28;
 
 const WATER_MARGIN = 6;
 const LINE_HALF = 10;
@@ -302,6 +305,7 @@ function initDrive3D() {
     spawn: null,
     freeRef: null,
     third: false,
+    camHeading: null,
   };
 
   function toWorld(lon, lat) {
@@ -1390,6 +1394,7 @@ function initDrive3D() {
   // ----- simulation -----
   function resetCar() {
     state.car.speed = 0;
+    state.camHeading = null;
     state.progress = 0;
     state.done = false;
     state.started = false;
@@ -1549,7 +1554,7 @@ function initDrive3D() {
     }
   }
 
-  function updateCamera() {
+  function updateCamera(dt) {
     const car = state.car;
     const w = toWorld(car.lon, car.lat);
     const h = (car.heading * Math.PI) / 180;
@@ -1560,6 +1565,21 @@ function initDrive3D() {
     carGroup.visible = state.third;
 
     if (state.third) {
+      // Ease the camera's yaw toward the car's, shortest way around. The car's
+      // body keeps its true heading, so while the camera catches up you see its
+      // side rather than a rigid rear view.
+      let ch = state.camHeading;
+      if (ch == null || !(dt > 0)) {
+        ch = h;
+      } else {
+        let turn = h - ch;
+        turn = Math.atan2(Math.sin(turn), Math.cos(turn));
+        ch += turn * (1 - Math.exp(-dt / CAM_LAG));
+      }
+      state.camHeading = ch;
+      const cfx = Math.sin(ch);
+      const cfz = -Math.cos(ch);
+
       // Roads/route sit lifted above the bare terrain, so seat the car on the
       // surface it drives on rather than on the ground (else it clips through).
       const lift = state.free ? ROAD_Y : ROUTE_Y;
@@ -1568,14 +1588,15 @@ function initDrive3D() {
       carGroup.rotation.y = -h;
       // Longer vehicles (semi) need the camera pulled back further.
       const scale = clamp(carLength / 4.5, 0.7, 2.8);
-      const camX = w.x - fx * CHASE_DIST * scale;
-      const camZ = w.z - fz * CHASE_DIST * scale;
+      const camX = w.x - cfx * CHASE_DIST * scale;
+      const camZ = w.z - cfz * CHASE_DIST * scale;
       const camY = Math.max(base + CHASE_HEIGHT * scale, terrainY(camX, camZ) + 0.6);
       camera.position.set(camX, camY, camZ);
-      camera.lookAt(w.x + fx * 5 * scale, base + 1.4, w.z + fz * 5 * scale);
+      camera.lookAt(w.x + cfx * 5 * scale, base + 1.4, w.z + cfz * 5 * scale);
       return;
     }
 
+    state.camHeading = h;
     camera.position.set(w.x, gy + EYE_HEIGHT, w.z);
     camera.lookAt(w.x + fx * 60, gy + EYE_HEIGHT - 3, w.z + fz * 60);
   }
@@ -1619,7 +1640,7 @@ function initDrive3D() {
     }
 
     update(state.ready ? dt : 0);
-    updateCamera();
+    updateCamera(state.ready ? dt : 0);
     updateHud();
 
     if (time > state.nextTileCheck) {
@@ -1901,6 +1922,7 @@ function initDrive3D() {
   }
   viewBtn.addEventListener("click", () => {
     state.third = !state.third;
+    state.camHeading = null;
     updateViewButton();
   });
   updateViewButton();
