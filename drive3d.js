@@ -1621,8 +1621,12 @@ function initDrive3D() {
         const s = clamp(remaining, -maxStep, maxStep);
         const nlat = car.lat + (cosH * s) / M_PER_DEG_LAT;
         const nlon = car.lon + (sinH * s) / (M_PER_DEG_LAT * Math.cos((nlat * Math.PI) / 180));
-        // In free roam the water is a hard edge (no route to snap back to).
-        if (blockedAt(nlon, nlat) || (state.free && inWater(nlon, nlat))) {
+        // In free roam the water is a hard edge (no route to snap back to),
+        // but a car that starts in it - "keep driving" from a bridge finish or
+        // a water drop-in - may drive out rather than being frozen.
+        const inFreeWater =
+          state.free && inWater(nlon, nlat) && !inWater(car.lon, car.lat);
+        if (blockedAt(nlon, nlat) || inFreeWater) {
           hit = true;
           break;
         }
@@ -1761,6 +1765,45 @@ function initDrive3D() {
     el.endDistance.textContent = distanceText(state.total);
     el.endTime.textContent = `${minutes}:${String(seconds).padStart(2, "0")}`;
     el.end.classList.remove("hidden");
+  }
+
+  // Roll a finished (or restarted) route straight into free roam: keep the
+  // world, chunks and momentum where they are, just drop the route and let the
+  // player wander from the finish line.
+  function keepDriving() {
+    if (!state.track && !state.free) return;
+    const car = state.car;
+    state.free = true;
+    state.track = null;
+    state.loadedRef = null;
+    state.cum = [];
+    state.total = 0;
+    state.progress = 0;
+    state.startLine = null;
+    state.finishLine = null;
+    state.routeGrid = null;
+    state.done = false;
+    state.started = false;
+    state.startedAt = null;
+    state.offRoad = false;
+    state.blocked = false;
+    state.waterUntil = 0;
+    state.spawn = { lon: car.lon, lat: car.lat, heading: car.heading };
+    game.track = null;
+    game.freeRoam = { lon: car.lon, lat: car.lat, heading: car.heading };
+    state.freeRef = game.freeRoam;
+    disposeGroup(routeGroup);
+    disposeGroup(markerGroup);
+    // Buildings the route ran through were built translucent; make them solid.
+    chunkGroup.traverse((obj) => {
+      if (obj.isMesh && obj.material === ghostMaterial) {
+        obj.material = buildingMaterial;
+        obj.renderOrder = RENDER_ORDER.buildings;
+      }
+    });
+    el.end.classList.add("hidden");
+    screenEl.classList.add("free");
+    closePause();
   }
 
   function loop(time) {
@@ -2103,6 +2146,7 @@ function initDrive3D() {
   document.getElementById("d3-again").addEventListener("click", () => {
     if (state.track || state.free) resetCar();
   });
+  document.getElementById("d3-keep").addEventListener("click", keepDriving);
 
   onUnitsChange(() => {
     updateHud();
