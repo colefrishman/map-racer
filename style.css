@@ -429,8 +429,7 @@ button.back:hover { background: #eee; }
 }
 
 /* Free roam has no route, so hide the progress UI. */
-#drive3d.free .bar,
-#drive3d.free .stat.small {
+#drive3d.free .hud-nav {
   display: none;
 }
 
@@ -483,6 +482,204 @@ button.back:hover { background: #eee; }
   font-size: 12px;
   color: #555;
   font-weight: 400;
+}
+
+/* The 3D HUD is a lightweight overlay, not a card: a pause button plus a small
+   speed/GPS readout. Everything else lives in the pause menu. */
+#drive3d .drive-hud {
+  width: auto;
+  padding: 0;
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  pointer-events: none;
+}
+
+#drive3d .hud-pause {
+  pointer-events: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 3px 14px rgba(0, 0, 0, 0.22);
+  cursor: pointer;
+}
+
+#drive3d .hud-pause span {
+  width: 4px;
+  height: 14px;
+  border-radius: 2px;
+  background: #0f172a;
+}
+
+#drive3d .hud-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+#drive3d .hud-mini {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  border-radius: 14px;
+  color: #0f172a;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 3px 14px rgba(0, 0, 0, 0.2);
+}
+
+#drive3d .hud-speed {
+  display: flex;
+  align-items: baseline;
+  gap: 3px;
+  font-size: 24px;
+  font-weight: 700;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+#drive3d .hud-speed small {
+  font-size: 11px;
+  font-weight: 500;
+  color: #64748b;
+}
+
+#drive3d .hud-nav {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 120px;
+}
+
+#drive3d .hud-arrow {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  fill: #2563eb;
+  transition: transform 0.12s linear;
+}
+
+#drive3d .hud-track {
+  flex: 1;
+  height: 6px;
+  border-radius: 3px;
+  background: #e2e8f0;
+  overflow: hidden;
+}
+
+#drive3d .hud-track > div {
+  width: 0;
+  height: 100%;
+  background: #2563eb;
+  transition: width 0.1s linear;
+}
+
+#drive3d .hud-nav span {
+  min-width: 30px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #475569;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* First person: the cockpit readout can breathe. */
+#drive3d.view-first .hud-mini { padding: 10px 14px; }
+#drive3d.view-first .hud-speed { font-size: 32px; }
+#drive3d.view-first .hud-nav { width: 150px; }
+
+/* Third person: keep it a small graphic so the car stays the star. */
+#drive3d.view-third .hud-mini { padding: 6px 10px; gap: 9px; }
+#drive3d.view-third .hud-speed { font-size: 18px; }
+#drive3d.view-third .hud-nav { width: 92px; }
+#drive3d.view-third .hud-arrow { width: 13px; height: 13px; }
+#drive3d.view-third .hud-nav span { display: none; }
+
+#drive3d .hud-stack .warning { margin-top: 0; }
+
+#drive3d.paused .drive-hud {
+  visibility: hidden;
+}
+
+/* Pause / settings sheet */
+#drive3d .pause-menu {
+  z-index: 4;
+  justify-content: flex-start;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.pause-card {
+  flex: none;
+  width: min(90vw, 360px);
+  margin: auto;
+  padding: 16px 20px;
+  border-radius: 16px;
+  text-align: left;
+  color: #0f172a;
+  background: #fff;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
+}
+
+.pause-card h2 {
+  margin: 0 0 10px;
+  font-size: 19px;
+}
+
+.pause-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.pause-row > span {
+  font-size: 12px;
+  font-weight: 600;
+  color: #475569;
+}
+
+.pause-row .units-toggle {
+  margin: 0;
+  flex: none;
+}
+
+.pause-row .units-toggle button {
+  padding: 5px 8px;
+  white-space: nowrap;
+}
+
+.pause-row #d3-view {
+  width: auto;
+  margin-top: 0;
+  padding: 6px 10px;
+  font-size: 12px;
+}
+
+.pause-actions {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.pause-actions .cta {
+  width: 100%;
+  margin-top: 0;
+  padding: 8px 6px;
+  font-size: 12px;
 }
 
 .bar {

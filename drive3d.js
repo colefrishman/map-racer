@@ -54,6 +54,11 @@ const CAR = {
 
 const CHASE_DIST = 7;
 const CHASE_HEIGHT = 3;
+// Buildings come from z14 vector tiles, where footprints are generalised and
+// can swallow narrow alleys, station roofs, and tunnel mouths that OSRM still
+// routes along. The route wins: anything this close to its centreline is
+// drivable even if a footprint says otherwise.
+const ROUTE_CLEAR = 6;
 // Seconds for the chase camera's yaw to catch up to the car. A little lag lets
 // the body swing into view through a turn instead of the camera locking to it.
 const CAM_LAG = 0.28;
@@ -202,6 +207,9 @@ function initDrive3D() {
     progressFill: document.getElementById("d3-progress-fill"),
     warning: document.getElementById("d3-warning"),
     water: document.getElementById("d3-water"),
+    arrow: document.getElementById("d3-arrow"),
+    pause: document.getElementById("d3-pause"),
+    pauseMenu: document.getElementById("d3-pause-menu"),
     empty: document.getElementById("d3-empty"),
     end: document.getElementById("d3-end"),
     endDistance: document.getElementById("d3-end-distance"),
@@ -274,6 +282,14 @@ function initDrive3D() {
   });
   const areaMaterial = flatMaterial;
   const buildingMaterial = new THREE.MeshLambertMaterial({ vertexColors: true });
+  // Buildings the route runs through (tunnels, station roofs, over-generalised
+  // z14 blocks) go translucent instead of hiding the road inside them.
+  const ghostMaterial = new THREE.MeshLambertMaterial({
+    vertexColors: true,
+    transparent: true,
+    opacity: 0.35,
+    depthWrite: false,
+  });
   const routeMaterial = new THREE.MeshBasicMaterial({ color: 0x2563eb, side: THREE.DoubleSide });
 
   const state = {
@@ -310,6 +326,9 @@ function initDrive3D() {
     freeRef: null,
     third: true,
     camHeading: null,
+    paused: false,
+    lastNav: 0,
+    routeGrid: null,
   };
 
   function toWorld(lon, lat) {
@@ -402,6 +421,7 @@ function initDrive3D() {
   function blockedAt(lon, lat) {
     const w = toWorld(lon, lat);
     const r = CAR.radius;
+    let blocked = false;
     for (const chunk of state.chunks.values()) {
       const footprints = chunk.footprints;
       if (!footprints || !footprints.length) continue;
@@ -414,7 +434,60 @@ function initDrive3D() {
           w.z > fp.maxZ + r
         )
           continue;
-        if (pointInRing(fp.ring, w.x, w.z) || distToRing(fp.ring, w.x, w.z) < r) return true;
+        if (pointInRing(fp.ring, w.x, w.z) || distToRing(fp.ring, w.x, w.z) < r) {
+          blocked = true;
+          break;
+        }
+      }
+      if (blocked) break;
+    }
+    if (!blocked) return false;
+    if (state.track && nearest(lon, lat).dist < ROUTE_CLEAR) return false;
+    return true;
+  }
+
+  const ROUTE_GRID_CELL = 24;
+
+  // Sample the track every few metres into a coarse grid so tile builds can ask
+  // "does the route run through this footprint?" without re-walking the track.
+  function buildRouteGrid(path) {
+    const grid = new Map();
+    const add = (lon, lat) => {
+      const w = toWorld(lon, lat);
+      const key = `${Math.floor(w.x / ROUTE_GRID_CELL)},${Math.floor(w.z / ROUTE_GRID_CELL)}`;
+      let cell = grid.get(key);
+      if (!cell) grid.set(key, (cell = []));
+      cell.push(w);
+    };
+    for (let i = 0; i < path.length; i++) {
+      add(path[i][0], path[i][1]);
+      const b = path[i + 1];
+      if (!b) continue;
+      const w0 = toWorld(path[i][0], path[i][1]);
+      const w1 = toWorld(b[0], b[1]);
+      const steps = Math.floor(Math.hypot(w1.x - w0.x, w1.z - w0.z) / 8);
+      for (let k = 1; k <= steps; k++) {
+        const t = k / (steps + 1);
+        add(path[i][0] + (b[0] - path[i][0]) * t, path[i][1] + (b[1] - path[i][1]) * t);
+      }
+    }
+    return grid;
+  }
+
+  function routeIntersectsFootprint(fp) {
+    const grid = state.routeGrid;
+    if (!grid) return false;
+    const x0 = Math.floor(fp.minX / ROUTE_GRID_CELL);
+    const x1 = Math.floor(fp.maxX / ROUTE_GRID_CELL);
+    const z0 = Math.floor(fp.minZ / ROUTE_GRID_CELL);
+    const z1 = Math.floor(fp.maxZ / ROUTE_GRID_CELL);
+    for (let cx = x0; cx <= x1; cx++) {
+      for (let cz = z0; cz <= z1; cz++) {
+        const cell = grid.get(`${cx},${cz}`);
+        if (!cell) continue;
+        for (let i = 0; i < cell.length; i++) {
+          if (pointInRing(fp.ring, cell[i].x, cell[i].z)) return true;
+        }
       }
     }
     return false;
@@ -1125,7 +1198,7 @@ function initDrive3D() {
     return new THREE.Color(BUILDING_PALETTE[i]);
   }
 
-  function addBuilding(feature, x, y, z, out, footprints) {
+  function addBuilding(feature, x, y, z, out, footprints, ghosts) {
     const props = feature.properties;
     const height = Math.max(3, Number(props.render_height) || 0);
     const minHeight = Number(props.render_min_height) || 0;
@@ -1134,6 +1207,7 @@ function initDrive3D() {
       geo.geometry.type === "Polygon" ? [geo.geometry.coordinates] : geo.geometry.coordinates;
 
     for (const polygon of polygons) {
+      let ghost = false;
       if (footprints) {
         const ring = [];
         let minX = Infinity;
@@ -1148,7 +1222,11 @@ function initDrive3D() {
           if (w.z < minZ) minZ = w.z;
           if (w.z > maxZ) maxZ = w.z;
         }
-        if (ring.length >= 3) footprints.push({ minX, maxX, minZ, maxZ, ring });
+        if (ring.length >= 3) {
+          const fp = { minX, maxX, minZ, maxZ, ring };
+          ghost = routeIntersectsFootprint(fp);
+          footprints.push(fp);
+        }
       }
 
       const shape = new THREE.Shape();
@@ -1238,7 +1316,7 @@ function initDrive3D() {
         colors[i * 3 + 2] = b;
       }
       geometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
-      out.push(geometry);
+      (ghost && ghosts ? ghosts : out).push(geometry);
     }
   }
 
@@ -1248,21 +1326,31 @@ function initDrive3D() {
     if (!layer) return footprints;
 
     const geometries = [];
+    const ghostGeometries = [];
     for (let i = 0; i < layer.length; i++) {
       try {
-        addBuilding(layer.feature(i), x, y, z, geometries, footprints);
+        addBuilding(layer.feature(i), x, y, z, geometries, footprints, ghostGeometries);
       } catch {
         /* skip malformed feature */
       }
     }
-    if (!geometries.length) return footprints;
-
-    const merged = mergeGeometries(geometries);
-    if (merged) {
-      merged.computeBoundingSphere();
-      const mesh = new THREE.Mesh(merged, buildingMaterial);
-      mesh.renderOrder = RENDER_ORDER.buildings;
-      group.add(mesh);
+    if (geometries.length) {
+      const merged = mergeGeometries(geometries);
+      if (merged) {
+        merged.computeBoundingSphere();
+        const mesh = new THREE.Mesh(merged, buildingMaterial);
+        mesh.renderOrder = RENDER_ORDER.buildings;
+        group.add(mesh);
+      }
+    }
+    if (ghostGeometries.length) {
+      const mergedGhost = mergeGeometries(ghostGeometries);
+      if (mergedGhost) {
+        mergedGhost.computeBoundingSphere();
+        const mesh = new THREE.Mesh(mergedGhost, ghostMaterial);
+        mesh.renderOrder = RENDER_ORDER.buildings + 1;
+        group.add(mesh);
+      }
     }
     return footprints;
   }
@@ -1396,6 +1484,26 @@ function initDrive3D() {
   }
 
   // ----- simulation -----
+  function openPause() {
+    if (state.paused || !state.ready || state.done) return;
+    if (!state.track && !state.free) return;
+    state.paused = true;
+    screenEl.classList.add("paused");
+    el.pauseMenu.classList.remove("hidden");
+    el.controls.classList.add("hidden");
+    for (const key of Object.keys(state.input)) state.input[key] = false;
+    state.axis.steer = 0;
+    state.axis.throttle = 0;
+  }
+
+  function closePause() {
+    if (!state.paused) return;
+    state.paused = false;
+    screenEl.classList.remove("paused");
+    el.pauseMenu.classList.add("hidden");
+    if (state.track || state.free) el.controls.classList.remove("hidden");
+  }
+
   function resetCar() {
     state.car.speed = 0;
     state.camHeading = null;
@@ -1406,6 +1514,7 @@ function initDrive3D() {
     state.startedAt = null;
     state.blocked = false;
     state.waterUntil = 0;
+    closePause();
     el.end.classList.add("hidden");
     for (const key of Object.keys(state.input)) state.input[key] = false;
 
@@ -1626,6 +1735,23 @@ function initDrive3D() {
     el.progressFill.style.width = `${state.progress * 100}%`;
     el.warning.classList.toggle("hidden", !state.offRoad);
     el.water.classList.toggle("hidden", !(performance.now() < state.waterUntil));
+
+    if (state.track) {
+      el.arrow.classList.remove("hidden");
+      const now = performance.now();
+      if (now - state.lastNav > 100) {
+        state.lastNav = now;
+        const at = nearest(state.car.lon, state.car.lat);
+        let target = at.heading;
+        if (at.dist > 12) {
+          target = bearing([state.car.lon, state.car.lat], [at.lon, at.lat]);
+        }
+        const rel = ((target - state.car.heading + 540) % 360) - 180;
+        el.arrow.style.transform = `rotate(${rel}deg)`;
+      }
+    } else {
+      el.arrow.classList.add("hidden");
+    }
   }
 
   function finishRoute() {
@@ -1657,8 +1783,10 @@ function initDrive3D() {
       }
     }
 
-    update(state.ready ? dt : 0);
-    updateWheels(state.ready ? dt : 0);
+    if (!state.paused) {
+      update(state.ready ? dt : 0);
+      updateWheels(state.ready ? dt : 0);
+    }
     updateCamera(state.ready ? dt : 0);
     updateHud();
 
@@ -1697,12 +1825,14 @@ function initDrive3D() {
   // Free roam: no route, just a drop-in point. Chunks stream around the car.
   function loadFree(spawn) {
     state.free = true;
+    closePause();
     state.track = null;
     state.loadedRef = null;
     state.cum = [];
     state.total = 0;
     state.startLine = null;
     state.finishLine = null;
+    state.routeGrid = null;
     state.spawn = spawn;
     state.origin = {
       lon: spawn.lon,
@@ -1721,6 +1851,7 @@ function initDrive3D() {
     state.free = false;
     const path = game.track;
     state.track = path;
+    closePause();
     state.cum = [0];
     let total = 0;
     for (let i = 1; i < path.length; i++) {
@@ -1741,6 +1872,7 @@ function initDrive3D() {
     const pM = path[path.length - 2] || pN;
     state.startLine = { P: toWorld(path[0][0], path[0][1]), dir: dirAt(path[0], path[1] || path[0]) };
     state.finishLine = { P: toWorld(pN[0], pN[1]), dir: dirAt(pM, pN) };
+    state.routeGrid = buildRouteGrid(path);
     clearChunks();
     state.nextTileCheck = 0;
     beginLoad();
@@ -1920,6 +2052,13 @@ function initDrive3D() {
 
   window.addEventListener("keydown", (e) => {
     if (screenEl.classList.contains("hidden")) return;
+    if (e.key === "Escape" || e.key === "p" || e.key === "P") {
+      if (!state.ready || (!state.track && !state.free)) return;
+      e.preventDefault();
+      if (state.paused) closePause();
+      else openPause();
+      return;
+    }
     const key = KEYS[e.key];
     if (key) {
       state.input[key] = true;
@@ -1938,6 +2077,8 @@ function initDrive3D() {
   const viewBtn = document.getElementById("d3-view");
   function updateViewButton() {
     viewBtn.textContent = state.third ? "First person" : "Third person";
+    screenEl.classList.toggle("view-third", state.third);
+    screenEl.classList.toggle("view-first", !state.third);
   }
   viewBtn.addEventListener("click", () => {
     state.third = !state.third;
@@ -1945,6 +2086,16 @@ function initDrive3D() {
     updateViewButton();
   });
   updateViewButton();
+
+  el.pause.addEventListener("click", openPause);
+  el.pauseMenu.addEventListener("click", (e) => {
+    if (e.target === el.pauseMenu) closePause();
+  });
+  document.getElementById("d3-resume").addEventListener("click", closePause);
+  document.getElementById("d3-back").addEventListener("click", () => {
+    closePause();
+    openScreen("home");
+  });
 
   document.getElementById("d3-restart").addEventListener("click", () => {
     if (state.track || state.free) resetCar();

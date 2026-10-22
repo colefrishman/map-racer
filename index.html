@@ -202,33 +202,56 @@
     </div>
 
     <div class="drive-hud">
-      <button class="back" type="button" data-screen="home">&larr; Back</button>
+      <button id="d3-pause" class="hud-pause" type="button" aria-label="Pause and settings">
+        <span></span><span></span>
+      </button>
 
-      <div class="stat">
-        <span id="d3-speed">0</span><small id="d3-speed-unit">mph</small>
+      <div class="hud-stack">
+        <div class="hud-mini">
+          <div class="hud-speed">
+            <span id="d3-speed">0</span><small id="d3-speed-unit">mph</small>
+          </div>
+          <div class="hud-nav">
+            <svg id="d3-arrow" class="hud-arrow" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M12 2.5 19 21l-7-4.2L5 21z" />
+            </svg>
+            <div class="hud-track"><div id="d3-progress-fill"></div></div>
+            <span id="d3-progress">0%</span>
+          </div>
+        </div>
+        <div id="d3-warning" class="warning hidden">Off road!</div>
+        <div id="d3-water" class="warning water hidden">Into the water — back on course!</div>
       </div>
+    </div>
 
-      <div class="units-toggle compact">
-        <button type="button" data-units="imperial">mph</button>
-        <button type="button" data-units="metric">km/h</button>
+    <div id="d3-pause-menu" class="drive-overlay pause-menu hidden">
+      <div class="pause-card">
+        <h2>Paused</h2>
+        <div class="pause-row">
+          <span>Units</span>
+          <div class="units-toggle compact">
+            <button type="button" data-units="imperial">mph</button>
+            <button type="button" data-units="metric">km/h</button>
+          </div>
+        </div>
+        <div class="pause-row">
+          <span>Controls</span>
+          <div id="d3-scheme" class="units-toggle compact" role="group" aria-label="Control scheme">
+            <button type="button" data-scheme="buttons">Pad</button>
+            <button type="button" data-scheme="tilt">Tilt</button>
+            <button type="button" data-scheme="hand">1-hand</button>
+          </div>
+        </div>
+        <div class="pause-row">
+          <span>View</span>
+          <button id="d3-view" class="cta ghost" type="button">First person</button>
+        </div>
+        <div class="pause-actions">
+          <button id="d3-resume" class="cta" type="button">Resume</button>
+          <button id="d3-restart" class="cta ghost" type="button">Restart</button>
+          <button id="d3-back" class="cta ghost" type="button">Back to home</button>
+        </div>
       </div>
-      <div class="bar">
-        <div id="d3-progress-fill"></div>
-      </div>
-      <div class="stat small">
-        <span id="d3-progress">0%</span> of route
-      </div>
-
-      <div id="d3-scheme" class="units-toggle compact" role="group" aria-label="Control scheme">
-        <button type="button" data-scheme="buttons">Pad</button>
-        <button type="button" data-scheme="tilt">Tilt</button>
-        <button type="button" data-scheme="hand">1-hand</button>
-      </div>
-
-      <button id="d3-view" class="cta ghost" type="button">Third person</button>
-      <button id="d3-restart" class="cta" type="button">Restart</button>
-      <div id="d3-warning" class="warning hidden">Off road!</div>
-      <div id="d3-water" class="warning water hidden">Into the water — back on course!</div>
     </div>
 
     <div id="d3-empty" class="drive-overlay hidden">
