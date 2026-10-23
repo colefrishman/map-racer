@@ -329,6 +329,7 @@ function initDrive3D() {
     paused: false,
     lastNav: 0,
     routeGrid: null,
+    tiltBeta: null,
   };
 
   function toWorld(lon, lat) {
@@ -1981,7 +1982,7 @@ function initDrive3D() {
   holdButton("d3-accel", "accel");
   holdButton("d3-brake", "brake");
 
-  // ----- control schemes: on-screen pad, tilt steering, one-hand stick -----
+  // ----- control schemes: on-screen pad, tilt steering + driving, thumbstick -----
   const SCHEMES = ["buttons", "tilt", "hand"];
   const schemeButtons = [...document.querySelectorAll("#d3-scheme button")];
   const stick = document.getElementById("d3-stick");
@@ -1998,6 +1999,7 @@ function initDrive3D() {
     }
     state.axis.steer = 0;
     state.axis.throttle = 0;
+    if (scheme === "tilt") state.tiltBeta = null;
     stickKnob.style.transform = "";
     try {
       localStorage.setItem("racer.controls", scheme);
@@ -2013,6 +2015,19 @@ function initDrive3D() {
       const dead = 4;
       state.axis.steer =
         Math.abs(gamma) < dead ? 0 : clamp((gamma - Math.sign(gamma) * dead) / 22, -1, 1);
+
+      // Tilting the top of the phone away from you (leaning into it) accelerates,
+      // tilting it back toward you brakes and reverses. The resting angle is
+      // captured on the first reading so any viewing angle works; re-tapping
+      // Tilt in the pause menu re-calibrates it.
+      const beta = e.beta || 0;
+      if (state.tiltBeta == null) state.tiltBeta = beta;
+      const lean = state.tiltBeta - beta;
+      const tiltDead = 5;
+      state.axis.throttle =
+        Math.abs(lean) < tiltDead
+          ? 0
+          : clamp((lean - Math.sign(lean) * tiltDead) / 30, -1, 1);
     });
   }
 
