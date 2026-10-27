@@ -250,6 +250,9 @@ function initDrive3D() {
 
   let carLength = 4.5;
   let carWheels = [];
+  let cockpitWheel = null;
+  let cockpitTrim = null;
+  let cockpitNeedle = null;
   function refreshCar() {
     carGroup.traverse((o) => {
       if (!o.isMesh) return;
@@ -267,9 +270,91 @@ function initDrive3D() {
     const size = new THREE.Vector3();
     new THREE.Box3().setFromObject(carGroup).getSize(size);
     carLength = size.z || 4.5;
+    if (cockpitTrim) cockpitTrim.material.color.set(carSettings.color);
   }
   refreshCar();
   onCarChange(refreshCar);
+
+  // First-person cockpit: a dashboard, instrument binnacle and steering wheel
+  // stuck to the camera so the first-person view feels like sitting inside the
+  // car. It is hidden whenever the third-person chase view is used.
+  scene.add(camera);
+  const cockpit = new THREE.Group();
+  cockpit.visible = false;
+  camera.add(cockpit);
+
+  function buildCockpit() {
+    const basic = (color) => new THREE.MeshBasicMaterial({ color });
+    const accent = basic(carSettings.color);
+
+    const dash = new THREE.Mesh(new THREE.BoxGeometry(1.9, 0.5, 0.34), basic(0x23262e));
+    dash.position.set(0, -0.48, -0.77);
+    cockpit.add(dash);
+
+    const cowl = new THREE.Mesh(new THREE.BoxGeometry(1.9, 0.1, 0.32), basic(0x2d323d));
+    cowl.position.set(0, -0.235, -0.77);
+    cowl.rotation.x = 0.08;
+    cockpit.add(cowl);
+
+    cockpitTrim = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.03, 0.02), accent);
+    cockpitTrim.position.set(0, -0.24, -0.598);
+    cockpit.add(cockpitTrim);
+
+    const binnacle = new THREE.Mesh(new THREE.BoxGeometry(0.66, 0.18, 0.3), basic(0x171a20));
+    binnacle.position.set(0, -0.16, -0.84);
+    cockpit.add(binnacle);
+
+    for (const dx of [-0.15, 0.15]) {
+      const ring = new THREE.Mesh(new THREE.RingGeometry(0.06, 0.073, 20), basic(0xb9c2d2));
+      ring.position.set(dx, -0.16, -0.686);
+      cockpit.add(ring);
+      const face = new THREE.Mesh(new THREE.CircleGeometry(0.06, 20), basic(0x0b0d10));
+      face.position.set(dx, -0.16, -0.685);
+      cockpit.add(face);
+      const needlePivot = new THREE.Group();
+      needlePivot.position.set(dx, -0.16, -0.683);
+      needlePivot.rotation.z = dx > 0 ? 2.4 : 0.7;
+      cockpit.add(needlePivot);
+      const needle = new THREE.Mesh(new THREE.BoxGeometry(0.013, 0.062, 0.004), basic(0xe4b34a));
+      needle.position.set(0, 0.02, 0);
+      needlePivot.add(needle);
+      if (dx > 0) cockpitNeedle = needlePivot;
+    }
+
+    // Steering wheel on a tilted pivot so it can spin about its own axis.
+    const pivot = new THREE.Group();
+    pivot.position.set(0, -0.33, -0.52);
+    pivot.rotation.x = -0.5;
+    cockpit.add(pivot);
+    cockpitWheel = new THREE.Group();
+    pivot.add(cockpitWheel);
+    cockpitWheel.add(new THREE.Mesh(new THREE.TorusGeometry(0.16, 0.022, 10, 28), basic(0x343a45)));
+    const hub = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 0.045, 16), basic(0x596273));
+    hub.rotation.x = Math.PI / 2;
+    cockpitWheel.add(hub);
+    for (const angle of [0, Math.PI * 0.66, Math.PI * 1.33]) {
+      const spoke = new THREE.Mesh(new THREE.BoxGeometry(0.15, 0.03, 0.02), basic(0x424a57));
+      spoke.position.set(Math.cos(angle) * 0.08, Math.sin(angle) * 0.08, 0);
+      spoke.rotation.z = angle;
+      cockpitWheel.add(spoke);
+    }
+    // Colored top marker so steering input is visible on the rim.
+    const marker = new THREE.Mesh(new THREE.BoxGeometry(0.035, 0.05, 0.03), accent);
+    marker.position.set(0, 0.16, 0.0);
+    cockpitWheel.add(marker);
+
+    // A-pillars and a roof header frame the windshield.
+    for (const sx of [-1, 1]) {
+      const pillar = new THREE.Mesh(new THREE.BoxGeometry(0.08, 1.4, 0.1), basic(0x2a2e37));
+      pillar.position.set(sx * 1.05, 0.05, -1.5);
+      pillar.rotation.z = sx * 0.14;
+      cockpit.add(pillar);
+    }
+    const header = new THREE.Mesh(new THREE.BoxGeometry(2.1, 0.09, 0.12), basic(0x262a32));
+    header.position.set(0, 0.74, -1.5);
+    cockpit.add(header);
+  }
+  buildCockpit();
 
   const baseMaterial = new THREE.MeshBasicMaterial({ color: 0xe6e4dc, side: THREE.DoubleSide });
   // Every ground layer (areas, water, roads, stripes) shares one non-depth-
@@ -1674,6 +1759,11 @@ function initDrive3D() {
   }
 
   function updateWheels(dt) {
+    if (cockpitWheel) cockpitWheel.rotation.z = -(state.steer || 0) * 2.2;
+    if (cockpitNeedle) {
+      const t = clamp(Math.abs(state.car.speed) / CAR.maxForward, 0, 1);
+      cockpitNeedle.rotation.z = 2.4 - t * 4.8;
+    }
     if (!carWheels.length) return;
     const car = state.car;
     const steer = state.steer || 0;
@@ -1695,6 +1785,7 @@ function initDrive3D() {
     const gy = terrainY(w.x, w.z);
 
     carGroup.visible = state.third;
+    cockpit.visible = !state.third;
 
     if (state.third) {
       // Ease the camera's yaw toward the car's, shortest way around. The car's
@@ -2059,8 +2150,13 @@ function initDrive3D() {
   function moveStick(clientX, clientY) {
     const rect = stick.getBoundingClientRect();
     const radius = rect.width / 2;
-    let dx = (clientX - (rect.left + radius)) / radius;
-    let dy = (clientY - (rect.top + rect.height / 2)) / (rect.height / 2);
+    // Full deflection is the knob reaching the rim, so it is normalised against
+    // the knob's travel rather than the pad radius. Pushed to the edge the stick
+    // now gives full throttle - previously it capped out around half, which made
+    // the joystick feel like it accelerated slower than the buttons.
+    const travel = Math.max(1, radius - stickKnob.offsetWidth / 2);
+    let dx = (clientX - (rect.left + radius)) / travel;
+    let dy = (clientY - (rect.top + rect.height / 2)) / travel;
     const len = Math.hypot(dx, dy);
     if (len > 1) {
       dx /= len;
@@ -2070,7 +2166,6 @@ function initDrive3D() {
     const axis = (v) => (Math.abs(v) < dead ? 0 : (v - Math.sign(v) * dead) / (1 - dead));
     state.axis.steer = clamp(axis(dx), -1, 1);
     state.axis.throttle = clamp(-axis(dy), -1, 1);
-    const travel = 0.4 * radius;
     stickKnob.style.transform = `translate(${dx * travel}px, ${dy * travel}px)`;
   }
   stick.addEventListener("pointerdown", (e) => {
