@@ -811,9 +811,15 @@ button.back:hover { background: #eee; }
   background: #2563eb;
 }
 
-/* Tilt scheme is hands-free: tilting steers and drives, so no buttons. */
-#drive3d.scheme-tilt .drive-controls .pad {
+/* Tilt scheme: tilt steers and drives, but keep the pedals within thumb reach
+   as an alternative to leaning. The steering arrows stay hidden. */
+#drive3d.scheme-tilt .drive-controls .pad:first-child {
   display: none;
+}
+
+#drive3d.scheme-tilt .drive-controls .pad:nth-child(2) {
+  display: flex;
+  margin-left: auto;
 }
 
 /* One-hand scheme: a single thumbstick on the right. */
